@@ -1,0 +1,95 @@
+{
+  "expo": {
+    "name": "Inventori's",
+    "slug": "inventoris",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "inventoris",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#101320"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.inventoris.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Kamera dipakai untuk memindai barcode barang dan memfoto nota belanja.",
+        "NSBluetoothAlwaysUsageDescription": "Menyambungkan printer struk thermal Bluetooth.",
+        "NSPhotoLibraryUsageDescription": "Memilih foto nota dari galeri.",
+        "NSMicrophoneUsageDescription": "Mikrofon dipakai untuk mencatat nominal dan nama barang dengan suara (Bahasa Indonesia).",
+        "NSSpeechRecognitionUsageDescription": "Pengenalan suara mengubah ucapan Bahasa Indonesia menjadi nominal dan nama barang.",
+        "NSBluetoothPeripheralUsageDescription": "Menyambungkan printer struk thermal Bluetooth."
+      }
+    },
+    "android": {
+      "package": "com.inventoris.app",
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.SCHEDULE_EXACT_ALARM"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#101320"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Kamera dipakai untuk memindai barcode barang dan memfoto nota belanja."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Aplikasi memakai galeri untuk melampirkan foto nota."
+        }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "Menyambungkan printer struk thermal Bluetooth."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Mikrofon dipakai untuk mencatat nominal dan nama barang dengan suara.",
+          "speechRecognitionPermission": "Pengenalan suara mengubah ucapan Bahasa Indonesia menjadi nominal dan nama barang.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ],
+      "expo-sqlite",
+      [
+        "expo-notifications",
+        {
+          "color": "#00F5A0",
+          "defaultChannel": "pengingat"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
