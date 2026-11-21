@@ -44,10 +44,15 @@ export function mergeRecords<T extends MergeInput>(
 ): { rows: T[]; report: MergeReport } {
   const report: MergeReport = { added: 0, updated: 0, kept: 0 };
   const byId = new Map<string, T>();
-  for (const row of current) byId.set(row.id, row);
+  for (const row of Array.isArray(current) ? current : []) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    if (typeof row.id !== 'string' || row.id.trim() === '') continue;
+    byId.set(row.id, row);
+  }
 
-  for (const row of incoming) {
-    if (!row || typeof row.id !== 'string' || row.id.trim() === '') continue;
+  for (const row of Array.isArray(incoming) ? incoming : []) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    if (typeof row.id !== 'string' || row.id.trim() === '') continue;
     const existing = byId.get(row.id);
     if (!existing) {
       byId.set(row.id, row);

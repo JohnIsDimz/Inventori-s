@@ -28,8 +28,18 @@ export interface EnqueuedRef {
   id: string;
 }
 
+const writes = new Set<Promise<void>>();
+export async function drainOutboxWrites(): Promise<void> {
+  await Promise.all([...writes]);
+}
 /** Catat perubahan untuk dikirim nanti. Tidak pernah melempar error ke UI. */
-export async function enqueue(
+export function enqueue(entity: SyncEntity, op: 'upsert' | 'delete', payload: Record<string, unknown>): Promise<void> {
+  const write = writeEnqueue(entity, op, payload);
+  writes.add(write);
+  void write.finally(() => writes.delete(write));
+  return write;
+}
+async function writeEnqueue(
   entity: SyncEntity,
   op: 'upsert' | 'delete',
   payload: Record<string, unknown>,
@@ -52,7 +62,7 @@ export async function enqueue(
 /** Id lokal yang masih punya perubahan belum terkirim (dipakai saat merge). */
 export async function pendingLocalIds(): Promise<Set<string>> {
   try {
-    const ops = await localStore.pending(500);
+    const ops = await localStore.pending(2147483647);
     const ids = new Set<string>();
     for (const op of ops) {
       try {

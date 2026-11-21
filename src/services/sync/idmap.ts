@@ -8,9 +8,36 @@
  *
  * Data baru tetap mendapat id berawalan, jadi peta ini dipakai untuk semuanya.
  */
+import { randomUUID } from 'expo-crypto';
 import { localStore } from '../db/local';
 
 const key = (entity: string) => `idmap:${entity}`;
+
+const KNOWN_ENTITIES = [
+  'product',
+  'stock_delta',
+  'transaction',
+  'receivable',
+  'receivable_payment',
+  'payable',
+  'payable_payment',
+  'category',
+  'allocation',
+  'shift',
+  'order',
+  'customer',
+  'profile',
+] as const;
+
+const KNOWN_CURSORS = [
+  'products',
+  'transactions',
+  'receivables',
+  'payables',
+  'categories',
+  'capital_allocations',
+  'orders',
+] as const;
 
 type Map = Record<string, string>;
 
@@ -35,10 +62,7 @@ export function isUuid(value: string): boolean {
 
 /** UUID v4 sederhana (tanpa dependensi tambahan). */
 export function newUuid(): string {
-  const hex = (n: number) =>
-    Array.from({ length: n }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
-  const variant = '89ab'[Math.floor(Math.random() * 4)];
-  return `${hex(8)}-${hex(4)}-4${hex(3)}-${variant}${hex(3)}-${hex(12)}`;
+  return randomUUID();
 }
 
 /** id lokal → id server (dibuat bila belum ada). */
@@ -62,4 +86,14 @@ export async function toLocalId(entity: string, remoteId: string): Promise<strin
   map[remoteId] = remoteId;
   await writeMap(entity, map);
   return remoteId;
+}
+
+/** Bersihkan seluruh peta ID & kursor sinkron saat keluar akun atau hapus data perangkat. */
+export async function clearSyncMetadata(): Promise<void> {
+  for (const entity of KNOWN_ENTITIES) {
+    await localStore.kvDel(key(entity));
+  }
+  for (const table of KNOWN_CURSORS) {
+    await localStore.kvDel(`sync:kursor:${table}`);
+  }
 }

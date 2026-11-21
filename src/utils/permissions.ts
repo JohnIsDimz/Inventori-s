@@ -105,3 +105,13 @@ export const ROLE_SUMMARY: Record<Role, string> = {
   admin: 'Semua izin operasional; tidak bisa mengatur anggota toko.',
   kasir: 'Jual barang, catat kasbon, dan buka/tutup shift. Tidak melihat laba, modal, atau log audit.',
 };
+
+/** A missing membership is never treated as local-owner access. */
+export function canSession(
+  session: { role: Role | null; userId?: string | null; outletId?: string | null },
+  action: Action,
+  connected: boolean,
+): boolean {
+  if (!connected) return can(null, action);
+  return Boolean(session.userId && session.outletId && session.role && can(session.role, action));
+}

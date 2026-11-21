@@ -3,22 +3,15 @@
  *
  * Alur satu putaran (`syncNow`):
  *   1. PUSH  — kirim antrean perubahan lokal ke Supabase, berurutan.
- *   2. PULL  — tarik baris yang berubah sejak kursor terakhir (per tabel).
- *   3. MERGE — gabungkan ke store; data yang masih punya perubahan tertunda
- *              di antrean TIDAK ditimpa server (perangkat menang sampai terkirim).
- *
- * Aturan yang dijaga:
- *   - Transaksi dikirim lewat RPC `sync_transaction` dengan `client_tx_id`,
- *     jadi pengiriman ulang tidak pernah menggandakan nota (teruji).
- *   - Stok dipotong server, bukan oleh klien.
- *   - Satu operasi gagal karena jaringan → berhenti, coba lagi nanti.
- *     Gagal karena validasi (stok kurang, bukan anggota) → dibuang setelah
- *     5 percobaan supaya antrean tidak macet selamanya.
+ *   2. PULL  — tarik baris yang berubah sejak kursor terakhir (per tabel, dengan paginasi).
+ *   3. MERGE — gabungkan ke store (termasuk penghapusan jarak jauh); data yang
+ *              masih punya perubahan tertunda di antrean TIDAK ditimpa.
  */
 import { useAppStore } from '../../data/store';
 import { useAuthStore } from '../../data/auth';
 import type { OutboxOp } from '../db/types';
 import { localStore } from '../db/local';
+import { localJsonStorage } from '../db/persistence';
 import { isCloudEnabled, requireSupabase } from '../supabase/client';
 import { toLocalId, toRemoteId } from './idmap';
 import * as map from './mappers';
@@ -40,6 +33,8 @@ import { isOnline } from './connectivity';
 
 const PERMANENT_CODES = new Set(['42501', 'P0001', '22000', '22P02', '23505', '23514', '23503']);
 const MAX_ATTEMPTS = 5;
+const PAGE_SIZE = 300;
+const MAX_PAGES = 20;
 
 export interface SyncSummary {
   pushed: number;
@@ -49,10 +44,6 @@ export interface SyncSummary {
 
 const empty: SyncSummary = { pushed: 0, pulled: 0, error: null };
 
-/**
- * Teks galat yang tampil di layar selalu versi ramah; pesan aslinya hanya
- * dicatat di log supaya bisa didiagnosa tanpa membingungkan pengguna.
- */
 function messageOf(error: unknown): string {
   if (__DEV__) console.warn('[sinkron]', error);
   return friendlySyncError(error);
@@ -75,6 +66,20 @@ async function refreshPending(): Promise<void> {
 
 // ---------------------------------------------------------------- push
 
+async function ensureRemoteCategory(categoryId: string, outletId: string): Promise<string | null> {
+  if (!categoryId) return null;
+  const remoteCategoryId = await toRemoteId('category', categoryId);
+  const localCat = useAppStore.getState().categories.find((c) => c.id === categoryId);
+  if (localCat) {
+    const sb = requireSupabase();
+    const row = map.categoryToRemote(localCat, outletId, remoteCategoryId, 0);
+    // Upsert kategori bawaan/lokal agar FK category_id pada transaksi sah di server
+    const { error } = await sb.from('categories').upsert(row, { onConflict: 'id' });
+    if (error) throw error;
+  }
+  return remoteCategoryId;
+}
+
 async function pushOne(op: OutboxOp, outletId: string): Promise<void> {
   const sb = requireSupabase();
   const payload = JSON.parse(op.payload) as Record<string, unknown>;
@@ -93,10 +98,6 @@ async function pushOne(op: OutboxOp, outletId: string): Promise<void> {
         return;
       }
       const row = map.productToRemote(payload as unknown as Product, outletId, remoteId);
-
-      // Sprint 2: stok tidak lagi dikirim sebagai nilai absolut. Perubahan stok
-      // (stok awal barang baru, atau selisih saat pemilik mengedit stok) dikirim
-      // sebagai delta dengan `stock_ref` unik agar aman dikirim ulang.
       const delta = Number(payload.stockDelta ?? 0);
       if (Number.isFinite(delta) && delta !== 0) {
         row.stock_delta = delta;
@@ -193,7 +194,19 @@ async function pushOne(op: OutboxOp, outletId: string): Promise<void> {
           discount: item.discount ?? 0,
         });
       }
-      const body = map.transactionToRemote({ transaction: tx, outletId, remoteId, items });
+      const categoryId = tx.categoryId ? await ensureRemoteCategory(tx.categoryId, outletId) : null;
+      const customerId = tx.customerId ? await toRemoteId('customer', tx.customerId) : null;
+      const body = map.transactionToRemote({
+        transaction: tx,
+        outletId,
+        remoteId,
+        items,
+        categoryId,
+        customerId,
+      });
+      if (items.length === 0) {
+        body.subtotal = tx.subtotal ?? tx.amount;
+      }
       const { error } = await sb.rpc('sync_transaction', { p: body });
       if (error) throw error;
       return;
@@ -241,10 +254,13 @@ async function pushOne(op: OutboxOp, outletId: string): Promise<void> {
       const parentEntity = op.entity === 'receivable_payment' ? 'receivable' : 'payable';
       const remoteId = await toRemoteId(op.entity, localId);
       const parentRemoteId = await toRemoteId(parentEntity, parentId);
+      const rawMethod = (payload.method as Transaction['method']) ?? 'cash';
+      // Pembayaran piutang/utang di tabel relasional memakai metode pembayaran nyata
+      const safeMethod: Transaction['method'] = rawMethod === 'kasbon' ? 'cash' : rawMethod;
       const row = map.paymentToRemote(
         {
           amount: Number(payload.amount ?? 0),
-          method: (payload.method as Transaction['method']) ?? 'cash',
+          method: safeMethod,
           note: typeof payload.note === 'string' ? payload.note : undefined,
         },
         op.entity === 'receivable_payment' ? 'receivable_id' : 'payable_id',
@@ -253,6 +269,7 @@ async function pushOne(op: OutboxOp, outletId: string): Promise<void> {
         typeof payload.paidAt === 'string' ? payload.paidAt : new Date().toISOString(),
       );
       const table = op.entity === 'receivable_payment' ? 'receivable_payments' : 'payable_payments';
+      row.source = payload.source === 'retur' ? 'retur' : rawMethod === 'kasbon' ? 'deposit' : null;
       const { error } = await sb.from(table).upsert(row, { onConflict: 'id' });
       if (error) throw error;
       return;
@@ -325,21 +342,30 @@ async function pushOne(op: OutboxOp, outletId: string): Promise<void> {
 
 async function pushOutbox(outletId: string): Promise<number> {
   let sent = 0;
-  const ops = await localStore.pending(50);
 
-  for (const op of ops) {
-    try {
-      await pushOne(op, outletId);
-      await localStore.removeOps([op.id]);
-      sent += 1;
-    } catch (error) {
-      const attempts = await localStore.bumpAttempts(op.id);
-      if (isPermanent(error) || attempts >= MAX_ATTEMPTS) {
-        // Operasi tidak akan pernah berhasil: buang agar antrean tidak macet.
-        await localStore.dropOp(op.id);
-        continue;
+  for (let round = 0; round < MAX_PAGES; round += 1) {
+    const ops = await localStore.pending(50);
+    if (ops.length === 0) break;
+
+    for (const op of ops) {
+      try {
+        await pushOne(op, outletId);
+        await localStore.removeOps([op.id]);
+        sent += 1;
+      } catch (error) {
+        const attempts = await localStore.bumpAttempts(op.id);
+        if (isPermanent(error) && attempts >= MAX_ATTEMPTS) {
+          // Jangan dibuang diam-diam: beri peringatan ramah di status sinkronisasi
+          await localStore.dropOp(op.id);
+          const prev = useSyncStore.getState();
+          useSyncStore.setState({
+            droppedCount: prev.droppedCount + 1,
+            warning: messageOf(error),
+          });
+          continue;
+        }
+        throw error;
       }
-      throw error;
     }
   }
 
@@ -348,27 +374,39 @@ async function pushOutbox(outletId: string): Promise<number> {
 
 // ---------------------------------------------------------------- pull
 
-async function fetchSince(table: string, outletId: string): Promise<map.RemoteRow[]> {
+/**
+ * Tarik semua perubahan sejak kursor komposit terakhir (`updated_at|id`).
+ * Memakai `.gte` + penyaringan `(updated_at, id)` dan loop paginasi supaya baris
+ * dengan stempel waktu identik atau jumlah > 300 tidak pernah terlewat.
+ */
+async function fetchSince(table: string, outletId: string, cursors: Map<string, string>): Promise<map.RemoteRow[]> {
   const sb = requireSupabase();
   const cursorKey = `sync:kursor:${table}`;
-  const cursor = (await localStore.kvGet(cursorKey)) ?? '1970-01-01T00:00:00.000Z';
-
-  const { data, error } = await sb
-    .from(table)
-    .select('*')
-    .eq('outlet_id', outletId)
-    .gt('updated_at', cursor)
-    .order('updated_at', { ascending: true })
-    .limit(300);
-
-  if (error) throw error;
-
-  const rows = (data ?? []) as map.RemoteRow[];
-  const last = rows[rows.length - 1];
-  if (last && typeof last.updated_at === 'string') {
-    await localStore.kvSet(cursorKey, last.updated_at);
+  const raw = (await localStore.kvGet(cursorKey)) ?? '';
+  const parts = raw.split('|');
+  // A cursor belongs to one membership/outlet, never to a different store.
+  let cursorTs = parts[0] === outletId && /^\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-][\d:]+)$/.test(parts[1] ?? '')
+    ? parts[1] : '1970-01-01T00:00:00.000Z';
+  let cursorId = parts[0] === outletId && /^[0-9a-f-]{36}$/i.test(parts[2] ?? '') ? parts[2] : '';
+  const collected: map.RemoteRow[] = [];
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    let query = sb.from(table).select('*').eq('outlet_id', outletId);
+    query = cursorId
+      ? query.or(`updated_at.gt.${cursorTs},and(updated_at.eq.${cursorTs},id.gt.${cursorId})`)
+      : query.gte('updated_at', cursorTs);
+    const { data, error } = await query.order('updated_at', { ascending: true })
+      .order('id', { ascending: true }).limit(PAGE_SIZE);
+    if (error) throw error;
+    const batch = (data ?? []) as map.RemoteRow[];
+    if (batch.length === 0) break;
+    collected.push(...batch);
+    const last = batch[batch.length - 1];
+    cursorTs = String(last.updated_at);
+    cursorId = String(last.id);
+    cursors.set(cursorKey, `${outletId}|${cursorTs}|${cursorId}`);
+    if (batch.length < PAGE_SIZE) break;
   }
-  return rows;
+  return collected;
 }
 
 interface PaymentLocal {
@@ -376,6 +414,7 @@ interface PaymentLocal {
   amount: number;
   paidAt: string;
   method: Transaction['method'];
+  source?: 'retur';
   note?: string;
 }
 
@@ -395,7 +434,8 @@ async function pullPayments(table: string, parentIds: string[], parentColumn: st
       id: String(row.id),
       amount: Number(row.amount ?? 0),
       paidAt: String(row.paid_at ?? new Date().toISOString()),
-      method: (row.method as Transaction['method']) ?? 'cash',
+      method: row.source === 'deposit' ? 'kasbon' : (row.method as Transaction['method']) ?? 'cash',
+      ...(row.source === 'retur' ? { source: 'retur' as const } : {}),
       note: typeof row.note === 'string' ? row.note : undefined,
     });
     grouped.set(parent, list);
@@ -406,7 +446,26 @@ async function pullPayments(table: string, parentIds: string[], parentColumn: st
 async function pullAll(outletId: string): Promise<number> {
   const sb = requireSupabase();
   const keep = await pendingLocalIds();
+  const cursors = new Map<string, string>();
   let pulled = 0;
+
+  const deleted: {
+    products: string[];
+    transactions: string[];
+    receivables: string[];
+    payables: string[];
+    categories: string[];
+    allocations: string[];
+    orders: string[];
+  } = {
+    products: [],
+    transactions: [],
+    receivables: [],
+    payables: [],
+    categories: [],
+    allocations: [],
+    orders: [],
+  };
 
   const patch: {
     products?: Product[];
@@ -418,15 +477,36 @@ async function pullAll(outletId: string): Promise<number> {
     shifts?: Shift[];
     orders?: Order[];
     profile?: { name: string; phone?: string };
+    deleted?: Partial<typeof deleted>;
   } = {};
 
+  // ---- kategori (ditarik lebih dulu agar transaksi bisa merujuk id kategori lokal)
+  const categoryRows = await fetchSince('categories', outletId, cursors);
+  const categories: Category[] = [];
+  for (const row of categoryRows) {
+    const localId = await toLocalId('category', String(row.id));
+    if (keep.has(localId)) continue;
+    if (row.deleted_at) {
+      deleted.categories.push(localId);
+      continue;
+    }
+    categories.push(map.categoryFromRemote(row, localId));
+  }
+  if (categories.length > 0) {
+    patch.categories = categories;
+    pulled += categories.length;
+  }
+
   // ---- produk
-  const productRows = await fetchSince('products', outletId);
+  const productRows = await fetchSince('products', outletId, cursors);
   const products: Product[] = [];
   for (const row of productRows) {
-    if (row.deleted_at) continue;
     const localId = await toLocalId('product', String(row.id));
     if (keep.has(localId)) continue;
+    if (row.deleted_at) {
+      deleted.products.push(localId);
+      continue;
+    }
     products.push(map.productFromRemote(row, localId));
   }
   if (products.length > 0) {
@@ -435,9 +515,19 @@ async function pullAll(outletId: string): Promise<number> {
   }
 
   // ---- transaksi + rincian barang
-  const txRows = (await fetchSince('transactions', outletId)).filter((row) => !row.deleted_at);
-  if (txRows.length > 0) {
-    const remoteIds = txRows.map((row) => String(row.id));
+  const allTxRows = await fetchSince('transactions', outletId, cursors);
+  const activeTxRows: map.RemoteRow[] = [];
+  for (const row of allTxRows) {
+    const localId = await toLocalId('transaction', String(row.id));
+    if (keep.has(localId)) continue;
+    if (row.deleted_at) {
+      deleted.transactions.push(localId);
+    } else {
+      activeTxRows.push(row);
+    }
+  }
+  if (activeTxRows.length > 0) {
+    const remoteIds = activeTxRows.map((row) => String(row.id));
     const { data: itemData, error: itemError } = await sb
       .from('transaction_items')
       .select('*')
@@ -455,11 +545,21 @@ async function pullAll(outletId: string): Promise<number> {
       byTx.set(key, list);
     }
 
+    const fallbackCats = useAppStore.getState().categories;
     const transactions: Transaction[] = [];
-    for (const row of txRows) {
+    for (const row of activeTxRows) {
       const localId = await toLocalId('transaction', String(row.id));
-      if (keep.has(localId)) continue;
-      transactions.push(map.transactionFromRemote(row, localId, byTx.get(String(row.id)) ?? []));
+      let localCatId =
+        typeof row.category_id === 'string' && row.category_id
+          ? await toLocalId('category', row.category_id)
+          : '';
+      if (!localCatId) {
+        const txType = String(row.type ?? 'sale') === 'expense' ? 'expense' : 'sale';
+        localCatId = fallbackCats.find((c) => c.type === txType)?.id ?? '';
+      }
+      transactions.push(
+        map.transactionFromRemote(row, localId, byTx.get(String(row.id)) ?? [], localCatId),
+      );
     }
     if (transactions.length > 0) {
       patch.transactions = transactions;
@@ -468,14 +568,23 @@ async function pullAll(outletId: string): Promise<number> {
   }
 
   // ---- kasbon
-  const receivableRows = (await fetchSince('receivables', outletId)).filter((row) => !row.deleted_at);
-  if (receivableRows.length > 0) {
-    const remoteIds = receivableRows.map((row) => String(row.id));
+  const allRcvRows = await fetchSince('receivables', outletId, cursors);
+  const activeRcvRows: map.RemoteRow[] = [];
+  for (const row of allRcvRows) {
+    const localId = await toLocalId('receivable', String(row.id));
+    if (keep.has(localId)) continue;
+    if (row.deleted_at || row.status === 'void') {
+      deleted.receivables.push(localId);
+    } else {
+      activeRcvRows.push(row);
+    }
+  }
+  if (activeRcvRows.length > 0) {
+    const remoteIds = activeRcvRows.map((row) => String(row.id));
     const payments = await pullPayments('receivable_payments', remoteIds, 'receivable_id');
     const receivables: Receivable[] = [];
-    for (const row of receivableRows) {
+    for (const row of activeRcvRows) {
       const localId = await toLocalId('receivable', String(row.id));
-      if (keep.has(localId)) continue;
       receivables.push(map.receivableFromRemote(row, localId, payments.get(String(row.id)) ?? []));
     }
     if (receivables.length > 0) {
@@ -485,14 +594,23 @@ async function pullAll(outletId: string): Promise<number> {
   }
 
   // ---- utang supplier
-  const payableRows = (await fetchSince('payables', outletId)).filter((row) => !row.deleted_at);
-  if (payableRows.length > 0) {
-    const remoteIds = payableRows.map((row) => String(row.id));
+  const allPayRows = await fetchSince('payables', outletId, cursors);
+  const activePayRows: map.RemoteRow[] = [];
+  for (const row of allPayRows) {
+    const localId = await toLocalId('payable', String(row.id));
+    if (keep.has(localId)) continue;
+    if (row.deleted_at || row.status === 'void') {
+      deleted.payables.push(localId);
+    } else {
+      activePayRows.push(row);
+    }
+  }
+  if (activePayRows.length > 0) {
+    const remoteIds = activePayRows.map((row) => String(row.id));
     const payments = await pullPayments('payable_payments', remoteIds, 'payable_id');
     const payables: Payable[] = [];
-    for (const row of payableRows) {
+    for (const row of activePayRows) {
       const localId = await toLocalId('payable', String(row.id));
-      if (keep.has(localId)) continue;
       payables.push(map.payableFromRemote(row, localId, payments.get(String(row.id)) ?? []));
     }
     if (payables.length > 0) {
@@ -501,37 +619,24 @@ async function pullAll(outletId: string): Promise<number> {
     }
   }
 
-  // ---- kategori
-  const categoryRows = (await fetchSince('categories', outletId)).filter((row) => !row.deleted_at);
-  if (categoryRows.length > 0) {
-    const categories: Category[] = [];
-    for (const row of categoryRows) {
-      const localId = await toLocalId('category', String(row.id));
-      if (keep.has(localId)) continue;
-      categories.push(map.categoryFromRemote(row, localId));
-    }
-    if (categories.length > 0) {
-      patch.categories = categories;
-      pulled += categories.length;
-    }
-  }
-
   // ---- alokasi modal
-  const allocationRows = (await fetchSince('capital_allocations', outletId)).filter((row) => !row.deleted_at);
-  if (allocationRows.length > 0) {
-    const allocations: CapitalAllocation[] = [];
-    for (const row of allocationRows) {
-      const localId = await toLocalId('allocation', String(row.id));
-      if (keep.has(localId)) continue;
-      allocations.push(map.allocationFromRemote(row, localId));
+  const allocationRows = await fetchSince('capital_allocations', outletId, cursors);
+  const allocations: CapitalAllocation[] = [];
+  for (const row of allocationRows) {
+    const localId = await toLocalId('allocation', String(row.id));
+    if (keep.has(localId)) continue;
+    if (row.deleted_at) {
+      deleted.allocations.push(localId);
+      continue;
     }
-    if (allocations.length > 0) {
-      patch.allocations = allocations;
-      pulled += allocations.length;
-    }
+    allocations.push(map.allocationFromRemote(row, localId));
+  }
+  if (allocations.length > 0) {
+    patch.allocations = allocations;
+    pulled += allocations.length;
   }
 
-  // ---- shift kasir (tabel ini tidak punya updated_at: ambil 50 terakhir)
+  // ---- shift kasir
   const { data: shiftData, error: shiftError } = await sb
     .from('shifts')
     .select('*')
@@ -551,14 +656,24 @@ async function pullAll(outletId: string): Promise<number> {
   }
 
   // ---- pesanan / kuotasi
-  const orderRows = (await fetchSince('orders', outletId)).filter((row) => !row.deleted_at);
-  if (orderRows.length > 0) {
-    const remoteIds = orderRows.map((row) => String(row.id));
+  const allOrderRows = await fetchSince('orders', outletId, cursors);
+  const activeOrderRows: map.RemoteRow[] = [];
+  for (const row of allOrderRows) {
+    const localId = await toLocalId('order', String(row.id));
+    if (keep.has(localId)) continue;
+    if (row.deleted_at) {
+      deleted.orders.push(localId);
+    } else {
+      activeOrderRows.push(row);
+    }
+  }
+  if (activeOrderRows.length > 0) {
+    const remoteIds = activeOrderRows.map((row) => String(row.id));
     const { data: orderItemData, error: orderItemError } = await sb
       .from('order_items')
       .select('*')
       .in('order_id', remoteIds);
-    if (orderItemError) throw orderItemError;
+    if (orderItemError) throw itemErrorFallback(orderItemError);
 
     const itemsByOrder = new Map<string, { productId?: string; name: string; qty: number; price: number }[]>();
     for (const row of (orderItemData ?? []) as map.RemoteRow[]) {
@@ -574,9 +689,8 @@ async function pullAll(outletId: string): Promise<number> {
     }
 
     const orders: Order[] = [];
-    for (const row of orderRows) {
+    for (const row of activeOrderRows) {
       const localId = await toLocalId('order', String(row.id));
-      if (keep.has(localId)) continue;
       orders.push({
         id: localId,
         customerName: String(row.customer_name ?? 'Pelanggan'),
@@ -600,6 +714,12 @@ async function pullAll(outletId: string): Promise<number> {
     }
   }
 
+  const hasDeleted = Object.values(deleted).some((ids) => ids.length > 0);
+  if (hasDeleted) {
+    patch.deleted = deleted;
+    pulled += Object.values(deleted).reduce((sum, ids) => sum + ids.length, 0);
+  }
+
   // ---- profil toko
   const outletName = useAuthStore.getState().outletName;
   if (outletName) patch.profile = { name: outletName };
@@ -608,18 +728,39 @@ async function pullAll(outletId: string): Promise<number> {
     useAppStore.getState().mergeRemote(patch);
   }
 
+  await localJsonStorage.setItem('inventoris-store-v1', JSON.stringify({ state: useAppStore.getState(), version: 2 }));
+  for (const [key, value] of cursors) await localStore.kvSet(key, value);
   return pulled;
+}
+
+function itemErrorFallback(error: unknown): unknown {
+  return error;
 }
 
 // ---------------------------------------------------------------- putaran
 
-export async function syncNow(): Promise<SyncSummary> {
+let paused = false;
+let activeRound: Promise<SyncSummary> | null = null;
+export function syncNow(): Promise<SyncSummary> {
+  if (paused) return Promise.resolve(empty);
+  if (activeRound) return activeRound;
+  activeRound = runSync().finally(() => { activeRound = null; });
+  return activeRound;
+}
+export async function pauseSync(): Promise<void> {
+  paused = true;
+  stopSyncLoop();
+  if (soonTimer) clearTimeout(soonTimer);
+  soonTimer = null;
+  await activeRound;
+}
+export function resumeSync(): void { paused = false; }
+async function runSync(): Promise<SyncSummary> {
   if (!isCloudEnabled) return empty;
 
   const { outletId, userId } = useAuthStore.getState();
   if (!outletId || !userId) return empty;
 
-  // Tanpa internet: jangan buang waktu, perubahan tetap menunggu di antrean.
   if (!isOnline()) return empty;
 
   if (useSyncStore.getState().running) return empty;
@@ -649,10 +790,6 @@ export async function syncNow(): Promise<SyncSummary> {
 
 let soonTimer: ReturnType<typeof setTimeout> | null = null;
 
-/**
- * Minta sinkron dalam waktu dekat (dipakai Realtime & tombol manual).
- * Beberapa pemicu beruntun digabung jadi satu putaran.
- */
 export function syncSoon(delayMs = 1200): void {
   if (soonTimer) clearTimeout(soonTimer);
   soonTimer = setTimeout(() => {
@@ -663,7 +800,6 @@ export function syncSoon(delayMs = 1200): void {
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
-/** Mulai sinkron berkala (default 30 detik). Aman dipanggil berulang. */
 export function startSyncLoop(intervalMs = 30_000): void {
   stopSyncLoop();
   void refreshPending();

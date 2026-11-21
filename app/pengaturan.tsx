@@ -1,7 +1,10 @@
+import { appAlert } from '../src/utils/alert';
+import { friendlyAuthError, friendlySyncError } from '../src/services/sync/errors';
+import { wipeDeviceData } from '../src/services/wipe';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TextField } from '../src/components/Field';
@@ -84,7 +87,7 @@ export default function PengaturanScreen() {
       const { data: rows, error } = await supabase.rpc('outlet_usage', { p_outlet: outletId });
       if (!alive) return;
       if (error) {
-        setUsageError(error.message);
+        setUsageError(friendlySyncError(error));
         return;
       }
       const row = Array.isArray(rows) ? rows[0] : rows;
@@ -120,7 +123,7 @@ export default function PengaturanScreen() {
   };
 
   const confirmReset = () => {
-    Alert.alert(
+    appAlert.alert(
       'Hapus semua data?',
       'Transaksi, kasbon, produk, dan tabungan modal akan dihapus permanen. Identitas toko juga ikut dihapus.',
       [
@@ -128,9 +131,11 @@ export default function PengaturanScreen() {
         {
           text: 'Hapus semua',
           style: 'destructive',
-          onPress: () => {
-            resetAll();
-            clearPhotos();
+          onPress: async () => {
+            try { await wipeDeviceData(); } catch {
+              setSaveError('Penghapusan belum selesai. Coba lagi.');
+              return;
+            }
             setName('');
             setOwnerName('');
             setCode('');
@@ -140,7 +145,7 @@ export default function PengaturanScreen() {
             // Form harus mengikuti isi penyimpanan setelah direset (template
             // kembali ke bawaan), bukan menyisakan teks lama di kotak isian.
             setTemplate(useAppStore.getState().settings.reminderTemplate);
-            Alert.alert('Data dihapus', 'Aplikasi kembali ke kondisi awal tanpa data.');
+            appAlert.alert('Data dihapus', 'Aplikasi kembali ke kondisi awal tanpa data.');
           },
         },
       ],
@@ -555,7 +560,7 @@ export default function PengaturanScreen() {
             ))}
             <Divider style={{ marginVertical: spacing.md }} />
             <Text style={styles.hint}>
-              Seluruh data tersimpan di HP ini dan tidak dikirim ke mana pun.
+              Data disimpan di HP ini. Bila memakai akun toko, data juga disinkronkan ke akun toko.
             </Text>
             <Button
               label="Bagikan laporan PDF bulan ini"

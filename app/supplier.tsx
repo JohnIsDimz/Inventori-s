@@ -1,3 +1,4 @@
+import { appAlert } from '../src/utils/alert';
 /**
  * Buku supplier (Sprint 15).
  *
@@ -12,7 +13,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TextField } from '../src/components/Field';
@@ -132,7 +133,7 @@ export default function SupplierScreen() {
   };
 
   const confirmArchive = (supplier: Supplier) => {
-    Alert.alert(
+    appAlert.alert(
       'Arsipkan supplier?',
       `${supplier.name} akan hilang dari daftar. Riwayat kulakan dan utangnya tetap tersimpan.`,
       [

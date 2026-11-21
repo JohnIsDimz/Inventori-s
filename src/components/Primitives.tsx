@@ -242,7 +242,8 @@ export function Button({
   style?: StyleProp<ViewStyle>;
   fullWidth?: boolean;
 }) {
-  const height = size === 'lg' ? 56 : size === 'sm' ? 38 : 48;
+  const height = size === 'lg' ? 56 : 48;
+  const blocked = Boolean(disabled || loading);
   /**
    * Tombol nonaktif tidak boleh memakai warna label tombol aktif: pada tombol
    * utama labelnya gelap (untuk latar hijau), sehingga di atas latar abu-abu
@@ -295,7 +296,7 @@ export function Button({
 
   if (variant === 'primary' && !disabled) {
     return (
-      <Pressable onPress={disabled ? undefined : onPress} disabled={disabled} style={containerStyle}>
+      <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: blocked, busy: Boolean(loading) }} onPress={blocked ? undefined : onPress} disabled={blocked} style={containerStyle}>
         <LinearGradient
           colors={gradients.primary}
           start={{ x: 0, y: 0 }}
@@ -308,7 +309,7 @@ export function Button({
   }
 
   return (
-    <Pressable onPress={disabled ? undefined : onPress} disabled={disabled} style={containerStyle}>
+    <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: blocked, busy: Boolean(loading) }} onPress={blocked ? undefined : onPress} disabled={blocked} style={containerStyle}>
       <View style={styles.buttonRow}>{content}</View>
     </Pressable>
   );
@@ -432,8 +433,8 @@ export function Sheet({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
       <View style={styles.sheetRoot}>
-        <Pressable style={styles.sheetBackdrop} onPress={onClose} />
-        <View style={[styles.sheetCard, { paddingBottom: insets.bottom + spacing.base }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Tutup dialog" style={styles.sheetBackdrop} onPress={onClose} />
+        <View accessibilityViewIsModal style={[styles.sheetCard, { paddingBottom: insets.bottom + spacing.base }]}>
           <View style={styles.sheetGrabber} />
           {title ? (
             <View style={styles.sheetHeader}>
@@ -441,7 +442,7 @@ export function Sheet({
                 <Text style={styles.sheetTitle}>{title}</Text>
                 {subtitle ? <Text style={styles.sheetSubtitle}>{subtitle}</Text> : null}
               </View>
-              <Pressable onPress={onClose} hitSlop={10} style={styles.sheetClose}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Tutup dialog" onPress={onClose} hitSlop={10} style={styles.sheetClose}>
                 <Icon name="close" size={16} color={colors.textMuted} strokeWidth={2} />
               </Pressable>
             </View>

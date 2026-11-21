@@ -1,3 +1,4 @@
+import { canSession, type Action } from '../src/utils/permissions';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -36,10 +37,23 @@ export default function RootLayout() {
 
   const router = useRouter();
   const segments = useSegments();
+  const role = useAuthStore((s) => s.role);
   const authReady = useAuthStore((s) => s.ready);
   const userId = useAuthStore((s) => s.userId);
   const outletId = useAuthStore((s) => s.outletId);
   const bootstrapAuth = useAuthStore((s) => s.bootstrap);
+
+  const restrictedRoutes: Record<string, Action> = {
+    stok: 'product.manage', pembelian: 'product.manage', retur: 'product.manage',
+    opname: 'stock.adjust', cabang: 'settings.manage', pengaturan: 'settings.manage',
+    'harga-beli': 'profit.view', cadangan: 'settings.manage', supplier: 'product.manage',
+    audit: 'audit.view', anggota: 'member.manage',
+  };
+  const requiredAction = restrictedRoutes[segments[0] ?? ''];
+  const routeAllowed = !requiredAction || canSession({ role, userId, outletId }, requiredAction, isCloudEnabled);
+  useEffect(() => {
+    if (authReady && userId && outletId && !routeAllowed) router.replace('/(tabs)');
+  }, [authReady, userId, outletId, routeAllowed, router]);
 
   // Data yang dipakai penjadwal pengingat (dipilih sempit agar efek tidak
   // dijalankan ulang oleh perubahan state lain).
@@ -77,10 +91,11 @@ export default function RootLayout() {
   // Penjaga rute: mode cloud wajib punya sesi, mode lokal tidak pernah diarahkan.
   useEffect(() => {
     if (!isCloudEnabled || !authReady) return;
-    const onLoginScreen = segments[0] === 'masuk';
+    const onLoginScreen = segments[0] === 'masuk' || segments[0] === 'daftar';
     if (!userId && !onLoginScreen) router.replace('/masuk');
-    if (userId && onLoginScreen) router.replace('/(tabs)');
-  }, [authReady, userId, segments, router]);
+    if (userId && !outletId && !['akun', 'privasi', 'daftar'].includes(segments[0] ?? '')) router.replace('/akun');
+    if (userId && outletId && onLoginScreen) router.replace('/(tabs)');
+  }, [authReady, userId, outletId, segments, router]);
 
   // Pantau koneksi: begitu internet kembali, langsung sinkron tanpa menunggu timer.
   useEffect(() => {
@@ -159,23 +174,45 @@ export default function RootLayout() {
           />
           <Stack.Screen name="kasbon/[id]" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
           <Stack.Screen name="kasir" options={{ animation: 'slide_from_bottom' }} />
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'product.manage', isCloudEnabled)}>
           <Stack.Screen name="stok" />
+          </Stack.Protected>
           <Stack.Screen name="pelanggan" />
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'settings.manage', isCloudEnabled)}>
           <Stack.Screen name="cabang" />
+          </Stack.Protected>
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'stock.adjust', isCloudEnabled)}>
           <Stack.Screen name="opname" />
+          </Stack.Protected>
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'product.manage', isCloudEnabled)}>
           <Stack.Screen name="pembelian" />
+          </Stack.Protected>
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'product.manage', isCloudEnabled)}>
           <Stack.Screen name="supplier" />
+          </Stack.Protected>
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'product.manage', isCloudEnabled)}>
           <Stack.Screen name="retur" />
+          </Stack.Protected>
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'profit.view', isCloudEnabled)}>
           <Stack.Screen name="harga-beli" />
+          </Stack.Protected>
           <Stack.Screen name="tagih-kasbon" />
           <Stack.Screen name="notifikasi" />
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'settings.manage', isCloudEnabled)}>
           <Stack.Screen name="pengaturan" />
+          </Stack.Protected>
           <Stack.Screen name="akun" />
           <Stack.Screen name="shift" />
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'member.manage', isCloudEnabled)}>
           <Stack.Screen name="anggota" />
+          </Stack.Protected>
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'audit.view', isCloudEnabled)}>
           <Stack.Screen name="audit" />
+          </Stack.Protected>
           <Stack.Screen name="daftar" />
+          <Stack.Protected guard={canSession({ role, userId, outletId }, 'settings.manage', isCloudEnabled)}>
           <Stack.Screen name="cadangan" />
+          </Stack.Protected>
           <Stack.Screen name="privasi" />
           <Stack.Screen name="pengingat" />
           <Stack.Screen name="pesanan" />

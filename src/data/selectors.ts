@@ -589,18 +589,34 @@ export function activeShift(state: { shifts?: { id: string; openedAt: string; op
  * Kasbon & QRIS/transfer tidak dihitung karena bukan uang fisik.
  */
 export function shiftCash(
-  state: { transactions: { type: string; method: string; amount: number; createdAt: string }[] },
-  shift: { openedAt: string; openingCash: number },
+  state: {
+    transactions: { type: string; method: string; amount: number; createdAt: string; outletId?: string }[];
+    receivables?: Receivable[];
+    payables?: Payable[];
+  },
+  shift: { openedAt: string; openingCash: number; closedAt?: string; outletId?: string },
 ): { cashIn: number; cashOut: number; expected: number } {
   const since = new Date(shift.openedAt).getTime();
   let cashIn = 0;
   let cashOut = 0;
   for (const tx of state.transactions) {
     if (tx.method !== 'cash') continue;
-    if (new Date(tx.createdAt).getTime() < since) continue;
+    if (shift.outletId && tx.outletId && tx.outletId !== shift.outletId) continue;
+    if (new Date(tx.createdAt).getTime() < since || (shift.closedAt && tx.createdAt > shift.closedAt)) continue;
     if (tx.type === 'sale') cashIn += tx.amount;
     else cashOut += tx.amount;
   }
+  const paymentsDuringShift = (rows: (Receivable | Payable)[]) => rows.reduce((sum, row) => {
+    if (shift.outletId && row.outletId && row.outletId !== shift.outletId) return sum;
+    return sum + row.payments.reduce((total, p) => {
+      const at = new Date(p.paidAt).getTime();
+      return p.method === 'cash' && p.source !== 'retur' && at >= since && (!shift.closedAt || p.paidAt <= shift.closedAt)
+        ? total + p.amount : total;
+    }, 0);
+  }, 0);
+  cashIn += paymentsDuringShift(state.receivables ?? []);
+  // Return credits reduce debt but never move physical cash.
+  cashOut += paymentsDuringShift(state.payables ?? []);
   return { cashIn, cashOut, expected: shift.openingCash + cashIn - cashOut };
 }
 

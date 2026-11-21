@@ -1,3 +1,4 @@
+import { appAlert } from '../src/utils/alert';
 /**
  * Buku pelanggan (Sprint 11).
  *
@@ -11,7 +12,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TextField } from '../src/components/Field';
@@ -113,7 +114,7 @@ export default function PelangganScreen() {
   };
 
   const remove = (customer: Customer) => {
-    Alert.alert(
+    appAlert.alert(
       'Hapus pelanggan?',
       `"${customer.name}" akan dihapus dari buku pelanggan. Riwayat transaksi dan kasbonnya tetap tersimpan dengan namanya.`,
       [
@@ -124,7 +125,7 @@ export default function PelangganScreen() {
           onPress: () => {
             const result = deleteCustomer(customer.id);
             if (!result.ok) {
-              Alert.alert('Belum bisa dihapus', result.reason);
+              appAlert.alert('Belum bisa dihapus', result.reason);
               return;
             }
             setDetail(null);
@@ -148,7 +149,7 @@ export default function PelangganScreen() {
     try {
       await Linking.openURL(url);
     } catch {
-      Alert.alert('Belum bisa membuka WhatsApp', 'Nomor pelanggan sudah tersimpan. Buka WhatsApp sendiri lalu cari nomornya ya.');
+      appAlert.alert('Belum bisa membuka WhatsApp', 'Nomor pelanggan sudah tersimpan. Buka WhatsApp sendiri lalu cari nomornya ya.');
     }
   };
 

@@ -7,3 +7,16 @@ ios/
 *.log
 .DS_Store
 expo-env.d.ts
+
+# Kredensial lingkungan & kunci penandatanganan rilis
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p8
+*.p12
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+cadangan-inventoris-*.json

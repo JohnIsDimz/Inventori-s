@@ -1,3 +1,4 @@
+import { safeNoteFileName } from '../utils/photoPath';
 /**
  * Cadangan lokal: ekspor seluruh data ke satu berkas JSON, lalu pulihkan lagi.
  *
@@ -41,12 +42,12 @@ export interface BackupPayload {
   allocations: CapitalAllocation[];
   shifts: Shift[];
   orders: Order[];
-  customers: Customer[];
-  outlets: Outlet[];
-  opnames: StockOpname[];
-  purchases: Purchase[];
-  suppliers: Supplier[];
-  purchaseReturns: PurchaseReturn[];
+  customers?: Customer[];
+  outlets?: Outlet[];
+  opnames?: StockOpname[];
+  purchases?: Purchase[];
+  suppliers?: Supplier[];
+  purchaseReturns?: PurchaseReturn[];
 }
 
 export interface BackupFile {
@@ -91,6 +92,380 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
+const finiteNum = (value: unknown, fallback = 0): number => {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const safeStr = (value: unknown, fallback = ''): string =>
+  typeof value === 'string' ? value : fallback;
+
+const safeIso = (value: unknown, fallback = '1970-01-01T00:00:00.000Z'): string => {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  return Number.isNaN(new Date(value).getTime()) ? fallback : value;
+};
+
+function stripDangerousKeys<T>(input: T): T {
+  if (Array.isArray(input)) return input.map(stripDangerousKeys) as unknown as T;
+  if (!isObject(input)) return input;
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    clean[k] = stripDangerousKeys(v);
+  }
+  return clean as T;
+}
+
+function cleanIdRows<T extends { id: string }>(
+  raw: unknown,
+  normalize: (row: Record<string, unknown>) => T | null,
+): T[] {
+  if (!Array.isArray(raw)) return [];
+  const out: T[] = [];
+  for (const item of raw) {
+    if (!isObject(item)) continue;
+    const id = safeStr(item.id).trim();
+    if (!id) continue;
+    const safe: Record<string, unknown> = stripDangerousKeys({ ...item, id });
+    for (const key of ['note', 'phone', 'address', 'barcode', 'customerId', 'outletId', 'supplierId', 'payableId', 'appliedPayableId', 'receivableId', 'transactionId', 'updatedAt', 'archivedAt', 'closedAt', 'lastRemindedAt']) {
+      if (safe[key] !== undefined && typeof safe[key] !== 'string') delete safe[key];
+    }
+    for (const key of ['subtotal', 'discount', 'discountValue', 'tax', 'taxRate', 'wholesalePrice', 'wholesaleMinQty', 'deposit', 'creditUsed', 'closingCash', 'expectedCash', 'difference', 'remindCount']) {
+      if (safe[key] !== undefined) {
+        if (typeof safe[key] !== 'number' || !Number.isFinite(safe[key])) delete safe[key];
+      }
+    }
+    const cleaned = normalize(safe);
+    if (cleaned) out.push(cleaned);
+  }
+  return out;
+}
+
+function sanitizePayments(raw: unknown): Receivable['payments'] {
+  if (!Array.isArray(raw)) return [];
+  const out: Receivable['payments'] = [];
+  for (const item of raw) {
+    if (!isObject(item)) continue;
+    const id = safeStr(item.id).trim();
+    const amount = finiteNum(item.amount, -1);
+    if (!id || amount <= 0) continue;
+    const m = safeStr(item.method, 'cash');
+    const method = (['cash', 'qris', 'transfer', 'kasbon'].includes(m) ? m : 'cash') as Transaction['method'];
+    out.push({
+      id,
+      amount,
+      paidAt: safeIso(item.paidAt),
+      method,
+      ...(typeof item.note === 'string' ? { note: item.note } : {}),
+      ...(item.source === 'retur' ? { source: item.source } : {}),
+    });
+  }
+  return out;
+}
+
+function sanitizePhotoUri(raw: unknown): string | undefined {
+  return typeof raw === 'string' && safeNoteFileName(raw) ? raw : undefined;
+}
+
+function sanitizePayload(data: Record<string, unknown>): BackupPayload {
+  const rawProfile = isObject(data.profile) ? stripDangerousKeys(data.profile) : {};
+  const rawSettings = isObject(data.settings) ? stripDangerousKeys(data.settings) : {};
+
+  const profile = {
+    ...(typeof rawProfile.name === 'string' ? { name: rawProfile.name } : {}),
+    ...(typeof rawProfile.ownerName === 'string' ? { ownerName: rawProfile.ownerName } : {}),
+    ...(typeof rawProfile.phone === 'string' ? { phone: rawProfile.phone } : {}),
+    ...(typeof rawProfile.address === 'string' ? { address: rawProfile.address } : {}),
+    ...(typeof rawProfile.code === 'string' ? { code: rawProfile.code } : {}),
+    ...(typeof rawProfile.openTime === 'string' ? { openTime: rawProfile.openTime } : {}),
+    ...(typeof rawProfile.closeTime === 'string' ? { closeTime: rawProfile.closeTime } : {}),
+    ...(typeof rawProfile.receiptFooter === 'string' ? { receiptFooter: rawProfile.receiptFooter } : {}),
+  } as StoreProfile;
+
+  const settings = {
+    ...(typeof rawSettings.notifEnabled === 'boolean' ? { notifEnabled: rawSettings.notifEnabled } : {}),
+    ...(Number.isInteger(rawSettings.notifHour) && Number(rawSettings.notifHour) >= 0 && Number(rawSettings.notifHour) <= 23 ? { notifHour: Number(rawSettings.notifHour) } : {}),
+    ...(typeof rawSettings.lastBackupAt === 'string' ? { lastBackupAt: safeIso(rawSettings.lastBackupAt) } : {}),
+    ...(typeof rawSettings.hideBalance === 'boolean' ? { hideBalance: rawSettings.hideBalance } : {}),
+    ...(typeof rawSettings.autoPrint === 'boolean' ? { autoPrint: rawSettings.autoPrint } : {}),
+    ...(typeof rawSettings.printerName === 'string' ? { printerName: rawSettings.printerName } : {}),
+    ...(typeof rawSettings.printerAddress === 'string' ? { printerAddress: rawSettings.printerAddress } : {}),
+    ...(typeof rawSettings.reminderTemplate === 'string' ? { reminderTemplate: rawSettings.reminderTemplate } : {}),
+    ...(Number.isFinite(Number(rawSettings.taxPercent)) && Number(rawSettings.taxPercent) >= 0 && Number(rawSettings.taxPercent) <= 100
+      ? { taxPercent: Number(rawSettings.taxPercent) }
+      : {}),
+  } as AppSettings;
+
+  const categories = cleanIdRows<Category>(data.categories, (row) => {
+    const label = safeStr(row.label).trim();
+    if (!label) return null;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      label,
+      type: row.type === 'expense' ? 'expense' : 'sale',
+      color: safeStr(row.color, '#00F5A0'),
+      icon: safeStr(row.icon, 'pricetag-outline'),
+    } as Category;
+  });
+
+  const products = cleanIdRows<Product>(data.products, (row) => {
+    const name = safeStr(row.name).trim();
+    if (!name) return null;
+    const sellPrice = finiteNum(row.sellPrice, NaN);
+    const costPrice = finiteNum(row.costPrice, 0);
+    const stock = finiteNum(row.stock, NaN);
+    if (!Number.isFinite(sellPrice) || sellPrice < 0 || !Number.isFinite(stock)) return null;
+    const stockByOutlet = isObject(row.stockByOutlet)
+      ? Object.fromEntries(
+          Object.entries(row.stockByOutlet)
+            .filter(([k, v]) => k !== '__proto__' && k !== 'constructor' && Number.isFinite(Number(v)))
+            .map(([k, v]) => [k, Number(v)]),
+        )
+      : undefined;
+    const priceTiers = Array.isArray(row.priceTiers)
+      ? row.priceTiers
+          .filter((t): t is Record<string, unknown> => isObject(t) && finiteNum(t.minQty, 0) >= 2 && finiteNum(t.price, -1) >= 0)
+          .map((t) => ({ minQty: Math.round(finiteNum(t.minQty, 2)), price: Math.round(finiteNum(t.price, 0)) }))
+      : undefined;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      name,
+      unit: safeStr(row.unit, 'pcs') || 'pcs',
+      sellPrice,
+      costPrice: Math.max(0, costPrice),
+      stock,
+      minStock: Math.max(0, finiteNum(row.minStock, 0)),
+      ...(stockByOutlet ? { stockByOutlet } : {}),
+      ...(priceTiers ? { priceTiers } : {}),
+    } as Product;
+  });
+
+  const transactions = cleanIdRows<Transaction>(data.transactions, (row) => {
+    const amount = finiteNum(row.amount, NaN);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    const m = safeStr(row.method, 'cash');
+    const method = (['cash', 'qris', 'transfer', 'kasbon'].includes(m) ? m : 'cash') as Transaction['method'];
+    const items = Array.isArray(row.items)
+      ? row.items
+          .filter((it): it is Record<string, unknown> => isObject(it) && finiteNum(it.qty, 0) > 0 && finiteNum(it.price, -1) >= 0)
+          .map((it) => ({
+            ...(typeof it.productId === 'string' ? { productId: it.productId } : {}),
+            name: safeStr(it.name, 'Barang') || 'Barang',
+            qty: finiteNum(it.qty, 1),
+            price: finiteNum(it.price, 0),
+            ...(Number.isFinite(Number(it.cost)) ? { cost: Math.max(0, Number(it.cost)) } : {}),
+            ...(Number.isFinite(Number(it.discount)) ? { discount: Math.max(0, Number(it.discount)) } : {}),
+          }))
+      : undefined;
+    const clean = stripDangerousKeys(row);
+    delete clean.photoUri;
+    const photoUri = sanitizePhotoUri(row.photoUri);
+    return {
+      ...clean,
+      id: safeStr(row.id),
+      type: row.type === 'expense' ? 'expense' : 'sale',
+      amount,
+      categoryId: safeStr(row.categoryId, ''),
+      method,
+      createdAt: safeIso(row.createdAt),
+      items,
+      ...(photoUri ? { photoUri } : {}),
+    } as Transaction;
+  });
+
+  const receivables = cleanIdRows<Receivable>(data.receivables, (row) => {
+    const amount = finiteNum(row.amount, NaN);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      customerName: safeStr(row.customerName, 'Pelanggan') || 'Pelanggan',
+      amount,
+      createdAt: safeIso(row.createdAt),
+      dueDate: safeIso(row.dueDate),
+      payments: sanitizePayments(row.payments),
+    } as Receivable;
+  });
+
+  const payables = cleanIdRows<Payable>(data.payables, (row) => {
+    const amount = finiteNum(row.amount, NaN);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      supplierName: safeStr(row.supplierName, 'Supplier') || 'Supplier',
+      amount,
+      createdAt: safeIso(row.createdAt),
+      dueDate: safeIso(row.dueDate),
+      payments: sanitizePayments(row.payments),
+    } as Payable;
+  });
+
+  const allocations = cleanIdRows<CapitalAllocation>(data.allocations, (row) => {
+    const amount = finiteNum(row.amount, NaN);
+    if (!Number.isFinite(amount) || amount === 0) return null;
+    return { ...stripDangerousKeys(row), id: safeStr(row.id), amount, createdAt: safeIso(row.createdAt) } as CapitalAllocation;
+  });
+
+  const shifts = cleanIdRows<Shift>(data.shifts, (row) => {
+    const openingCash = finiteNum(row.openingCash, NaN);
+    if (!Number.isFinite(openingCash) || openingCash < 0) return null;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      cashierName: safeStr(row.cashierName, 'Kasir') || 'Kasir',
+      openedAt: safeIso(row.openedAt),
+      openingCash,
+    } as Shift;
+  });
+
+  const orders = cleanIdRows<Order>(data.orders, (row) => {
+    const total = finiteNum(row.total, NaN);
+    if (!Number.isFinite(total) || total < 0) return null;
+    const items = Array.isArray(row.items)
+      ? row.items
+          .filter((it): it is Record<string, unknown> => isObject(it) && finiteNum(it.qty, 0) > 0 && finiteNum(it.price, -1) >= 0)
+          .map((it) => ({
+            ...(typeof it.productId === 'string' ? { productId: it.productId } : {}),
+            name: safeStr(it.name, 'Barang') || 'Barang',
+            qty: finiteNum(it.qty, 1),
+            price: finiteNum(it.price, 0),
+          }))
+      : [];
+    const status = row.status === 'selesai' || row.status === 'batal' ? row.status : 'terbuka';
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      customerName: safeStr(row.customerName, 'Pelanggan') || 'Pelanggan',
+      items,
+      total,
+      status,
+      createdAt: safeIso(row.createdAt),
+    } as Order;
+  });
+
+  const customers = cleanIdRows<Customer>(data.customers, (row) => {
+    const name = safeStr(row.name).trim();
+    if (!name) return null;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      name,
+      createdAt: safeIso(row.createdAt),
+    } as Customer;
+  });
+
+  const outlets = cleanIdRows<Outlet>(data.outlets, (row) => {
+    const name = safeStr(row.name).trim();
+    if (!name) return null;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      name,
+      code: safeStr(row.code, 'CB01'),
+      createdAt: safeIso(row.createdAt),
+    } as Outlet;
+  });
+
+  const opnames = cleanIdRows<StockOpname>(data.opnames, (row) => {
+    const lines = (Array.isArray(row.lines) ? row.lines : [])
+      .filter((it): it is Record<string, unknown> => isObject(it) && typeof it.productId === 'string')
+      .map((it) => ({
+        productId: safeStr(it.productId), name: safeStr(it.name, 'Barang'), unit: safeStr(it.unit, 'pcs'),
+        cost: Math.max(0, finiteNum(it.cost)), system: Math.max(0, finiteNum(it.system)), counted: Math.max(0, finiteNum(it.counted)),
+      }));
+    return { ...stripDangerousKeys(row), id: safeStr(row.id), lines,
+      lossValue: lines.reduce((sum, l) => sum + Math.max(0, l.system - l.counted) * l.cost, 0),
+      gainValue: lines.reduce((sum, l) => sum + Math.max(0, l.counted - l.system) * l.cost, 0),
+      createdAt: safeIso(row.createdAt),
+    } as StockOpname;
+  });
+
+  const purchases = cleanIdRows<Purchase>(data.purchases, (row) => {
+    const total = finiteNum(row.total, NaN);
+    if (!Number.isFinite(total) || total < 0) return null;
+    const items = Array.isArray(row.items)
+      ? row.items
+          .filter((it): it is Record<string, unknown> => isObject(it) && finiteNum(it.qty, 0) > 0 && finiteNum(it.unitCost, -1) >= 0)
+          .map((it) => ({
+            productId: safeStr(it.productId),
+            name: safeStr(it.name, 'Barang'),
+            unit: safeStr(it.unit, 'pcs'),
+            qty: finiteNum(it.qty, 1),
+            unitCost: finiteNum(it.unitCost, 0),
+          }))
+      : [];
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      supplierName: safeStr(row.supplierName, 'Supplier') || 'Supplier',
+      items,
+      total,
+      paid: Math.max(0, Math.min(total, finiteNum(row.paid, 0))),
+      method: row.method === 'transfer' ? 'transfer' : row.method === 'kasbon' ? 'kasbon' : 'cash',
+      createdAt: safeIso(row.createdAt),
+    } as Purchase;
+  });
+
+  const suppliers = cleanIdRows<Supplier>(data.suppliers, (row) => {
+    const name = safeStr(row.name).trim();
+    if (!name) return null;
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      name,
+      createdAt: safeIso(row.createdAt),
+    } as Supplier;
+  });
+
+  const purchaseReturns = cleanIdRows<PurchaseReturn>(data.purchaseReturns, (row) => {
+    const total = finiteNum(row.total, NaN);
+    if (!Number.isFinite(total) || total < 0) return null;
+    const items = Array.isArray(row.items)
+      ? row.items
+          .filter((it): it is Record<string, unknown> => isObject(it) && finiteNum(it.qty, 0) > 0 && finiteNum(it.unitCost, -1) >= 0)
+          .map((it) => ({
+            productId: safeStr(it.productId),
+            name: safeStr(it.name, 'Barang'),
+            unit: safeStr(it.unit, 'pcs'),
+            qty: finiteNum(it.qty, 1),
+            unitCost: finiteNum(it.unitCost, 0),
+          }))
+      : [];
+    return {
+      ...stripDangerousKeys(row),
+      id: safeStr(row.id),
+      supplierName: safeStr(row.supplierName, 'Supplier') || 'Supplier',
+      items,
+      total,
+      appliedAmount: Math.max(0, Math.min(total, finiteNum(row.appliedAmount, 0))),
+      creditValue: Math.max(0, Math.min(total, finiteNum(row.creditValue, 0))),
+      createdAt: safeIso(row.createdAt),
+    } as PurchaseReturn;
+  });
+
+  return {
+    profile,
+    settings,
+    categories,
+    products,
+    transactions,
+    receivables,
+    payables,
+    allocations,
+    shifts,
+    orders,
+    customers,
+    outlets,
+    opnames,
+    purchases,
+    suppliers,
+    purchaseReturns,
+  };
+}
+
 /**
  * `merge`   — hanya menambah yang belum ada (data lokal tidak pernah ditimpa).
  * `latest`  — baris yang lebih baru menang (dipakai saat menukar data antar HP).
@@ -110,6 +485,7 @@ export function parseBackup(text: string): ParseResult {
     return { ok: false, reason: 'Berkas terlalu besar (di atas 40 MB).' };
   }
 
+  if (text.length > 10 * 1024 * 1024) return { ok: false, reason: 'Berkas terlalu besar. Batasnya 10 MB.' };
   let raw: unknown;
   try {
     raw = JSON.parse(trimmed);
@@ -130,34 +506,33 @@ export function parseBackup(text: string): ParseResult {
   if (!isObject(raw.data)) return { ok: false, reason: 'Cadangan tidak berisi data.' };
 
   const data = raw.data as Record<string, unknown>;
-  const payload: BackupPayload = {
-    profile: (isObject(data.profile) ? data.profile : {}) as unknown as StoreProfile,
-    settings: (isObject(data.settings) ? data.settings : {}) as unknown as AppSettings,
-    categories: asArray<Category>(data.categories),
-    products: asArray<Product>(data.products),
-    transactions: asArray<Transaction>(data.transactions),
-    receivables: asArray<Receivable>(data.receivables),
-    payables: asArray<Payable>(data.payables),
-    allocations: asArray<CapitalAllocation>(data.allocations),
-    shifts: asArray<Shift>(data.shifts),
-    // Berkas versi 1 belum punya pesanan — dibaca sebagai daftar kosong.
-    orders: asArray<Order>(data.orders),
-    // Begitu juga buku pelanggan (baru ada sejak Sprint 11).
-    customers: asArray<Customer>(data.customers),
-    // Daftar cabang baru ada sejak Sprint 12; berkas lama dibaca kosong.
-    outlets: asArray<Outlet>(data.outlets),
-    // Riwayat hitung stok baru ada sejak Sprint 13.
-    opnames: asArray<StockOpname>(data.opnames),
-    // Riwayat kulakan supplier baru ada sejak Sprint 14.
-    purchases: asArray<Purchase>(data.purchases),
-    // Buku supplier & retur barang baru ada sejak Sprint 15.
-    suppliers: asArray<Supplier>(data.suppliers),
-    purchaseReturns: asArray<PurchaseReturn>(data.purchaseReturns),
-  };
+  const rawEntryCount = [
+    data.categories,
+    data.products,
+    data.transactions,
+    data.receivables,
+    data.payables,
+    data.allocations,
+    data.shifts,
+    data.orders,
+    data.customers,
+    data.outlets,
+    data.opnames,
+    data.purchases,
+    data.suppliers,
+    data.purchaseReturns,
+  ].reduce<number>((sum, list) => sum + asArray(list).length, 0);
+
+  const payload = sanitizePayload(data);
 
   const counts = countPayload(payload);
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
-  if (total === 0) return { ok: false, reason: 'Cadangan ini tidak berisi satu pun data.' };
+  if (total === 0) {
+    if (rawEntryCount > 0) {
+      return { ok: false, reason: 'Isi berkas cadangan rusak atau tidak sesuai format.' };
+    }
+    return { ok: false, reason: 'Cadangan ini tidak berisi satu pun data.' };
+  }
 
   return {
     ok: true,

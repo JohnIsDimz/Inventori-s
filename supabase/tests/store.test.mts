@@ -24,6 +24,7 @@ await build({
   format: 'esm',
   logLevel: 'error',
   alias: {
+    'expo-crypto': path.join(here, 'stubs/expo-crypto.mjs'),
     'expo-sqlite': path.join(here, 'stubs/expo-sqlite.mjs'),
     '@react-native-async-storage/async-storage': path.join(here, 'stubs/async-storage.mjs'),
   },

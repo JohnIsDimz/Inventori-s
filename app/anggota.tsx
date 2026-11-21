@@ -1,3 +1,5 @@
+import { friendlyAuthError, friendlySyncError } from '../src/services/sync/errors';
+import { useCan, useCanSeeProfit } from '../src/utils/usePermissions';
 /**
  * Kelola anggota toko (undang kasir/admin, ubah peran, nonaktifkan).
  *
@@ -8,7 +10,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../src/components/Icon';
@@ -31,7 +33,7 @@ export default function AnggotaScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { outletId, role, userId } = useAuthStore();
-  const isOwner = can(role, 'member.manage');
+  const isOwner = useCan('member.manage');
 
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [inviteRole, setInviteRole] = useState<'kasir' | 'admin'>('kasir');
@@ -45,7 +47,7 @@ export default function AnggotaScreen() {
     if (!isCloudEnabled || !supabase || !outletId) return;
     const { data, error: rpcError } = await supabase.rpc('outlet_members', { p_outlet: outletId });
     if (rpcError) {
-      setError(rpcError.message);
+      setError(friendlySyncError(rpcError));
       return;
     }
     setMembers((data ?? []) as MemberRow[]);
@@ -66,7 +68,7 @@ export default function AnggotaScreen() {
     });
     setBusy(false);
     if (rpcError) {
-      setError(rpcError.message);
+      setError(friendlySyncError(rpcError));
       return;
     }
     setInviteCode(String(data));
@@ -89,7 +91,7 @@ export default function AnggotaScreen() {
     });
     setBusy(false);
     if (rpcError) {
-      setError(rpcError.message);
+      setError(friendlySyncError(rpcError));
       return;
     }
     await load();
@@ -104,7 +106,7 @@ export default function AnggotaScreen() {
     });
     setBusy(false);
     if (rpcError) {
-      setError(rpcError.message);
+      setError(friendlySyncError(rpcError));
       return;
     }
     await load();

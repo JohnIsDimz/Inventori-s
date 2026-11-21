@@ -36,10 +36,16 @@ const DDL = `
 
 function open(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
-    dbPromise = SQLite.openDatabaseAsync('inventoris.db').then(async (db) => {
-      await db.execAsync(DDL);
-      return db;
-    });
+    dbPromise = SQLite.openDatabaseAsync('inventoris.db')
+      .then(async (db) => {
+        await db.execAsync(DDL);
+        return db;
+      })
+      .catch((error) => {
+        // Jangan mengunci Promise gagal selamanya bila pembukaan awal gagal sesaat.
+        dbPromise = null;
+        throw error;
+      });
   }
   return dbPromise;
 }

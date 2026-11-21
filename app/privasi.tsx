@@ -1,3 +1,5 @@
+import { appAlert } from '../src/utils/alert';
+import { wipeDeviceData } from '../src/services/wipe';
 /**
  * Data & privasi — hak pengguna atas datanya sendiri (UU PDP).
  *
@@ -12,7 +14,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TextField } from '../src/components/Field';
@@ -104,7 +106,7 @@ export default function PrivasiScreen() {
       if (yes) onYes();
       return;
     }
-    Alert.alert(title, message, [
+    appAlert.alert(title, message, [
       { text: 'Batal', style: 'cancel' },
       { text: 'Hapus', style: 'destructive', onPress: onYes },
     ]);
@@ -115,8 +117,9 @@ export default function PrivasiScreen() {
       'Hapus semua data di perangkat?',
       'Seluruh barang, transaksi, kasbon, dan pengaturan di HP ini akan hilang. Buat cadangan dulu bila masih dibutuhkan.',
       () => {
-        resetAll();
-        setStatus({ tone: 'ok', text: 'Data di perangkat sudah dihapus. Aplikasi siap dipakai dari nol.' });
+        void wipeDeviceData().then(() => {
+          setStatus({ tone: 'ok', text: 'Data di perangkat sudah dihapus.' });
+        }).catch(() => setStatus({ tone: 'error', text: 'Penghapusan belum selesai. Coba lagi.' }));
         setConfirmText('');
       },
     );
@@ -135,11 +138,10 @@ export default function PrivasiScreen() {
     setStatus(null);
     try {
       const result = await deleteMyAccount();
-      resetAll();
       await auth.signOut();
       setStatus({
         tone: 'ok',
-        text: `Akun dihapus. ${result.outletsDeleted} toko dan ${result.membershipsRemoved} keanggotaan dibersihkan.`,
+        text: `Data akun dihapus. ${result.outletsDeleted} toko dan ${result.membershipsRemoved} keanggotaan dibersihkan. Identitas masuk perlu dihapus oleh pengelola layanan.`,
       });
       setConfirmText('');
       setPreview(null);
@@ -279,7 +281,7 @@ export default function PrivasiScreen() {
                     Sebagai pemilik, serahkan toko ke anggota lain dulu (Anggota toko) sebelum keluar.
                   </Text>
                 )}
-                <SectionLabel>HAPUS AKUN</SectionLabel>
+                <SectionLabel>HAPUS DATA AKUN</SectionLabel>
                 {preview && !preview.canDelete ? (
                   <View style={styles.warnBox}>
                     <Icon name="alert" size={15} color={colors.amber} strokeWidth={1.9} />
@@ -287,8 +289,8 @@ export default function PrivasiScreen() {
                   </View>
                 ) : (
                   <Text style={styles.body}>
-                    Menghapus akun ikut menghapus {preview?.outletsOwned ?? 1} toko milik Anda beserta
-                    seluruh barang, transaksi, kasbon, dan anggotanya. Tidak bisa dibatalkan.
+                    Menghapus data akun ikut menghapus {preview?.outletsOwned ?? 1} toko milik Anda beserta
+                    seluruh barang, transaksi, kasbon, dan anggotanya. Tidak bisa dibatalkan. Identitas masuk, termasuk email, masih tercatat sampai dihapus oleh pengelola layanan.
                   </Text>
                 )}
                 <TextField
@@ -300,7 +302,7 @@ export default function PrivasiScreen() {
                   editable={preview?.canDelete !== false && !busy}
                 />
                 <Button
-                  label={busy ? 'Menghapus…' : 'Hapus akun saya'}
+                  label={busy ? 'Menghapus…' : 'Hapus data akun saya'}
                   variant="danger"
                   icon="trash"
                   onPress={() => void removeAccount()}
@@ -334,13 +336,13 @@ export default function PrivasiScreen() {
             {isCloudEnabled ? (
               <Text style={styles.body}>
                 <Text style={styles.strong}>Log audit</Text> (siapa mengubah harga, siapa membatalkan
-                transaksi) disimpan maksimal 90 hari lalu dibersihkan otomatis.
+                transaksi) disimpan untuk membantu pemeriksaan. Jadwal pembersihannya diatur oleh pengelola layanan.
               </Text>
             ) : null}
             <Text style={styles.body}>
               <Text style={styles.strong}>Hapus = benar-benar dihapus.</Text>{' '}
               {isCloudEnabled
-                ? 'Bila akun toko dihapus, seluruh data toko milik Anda yang tersalin ke perangkat lain ikut terhapus, bukan hanya ditandai.'
+                ? 'Data toko di akun dan salinan di HP ini dibersihkan. Berkas cadangan, perangkat yang tidak tersambung, serta salinan yang sudah dibagikan perlu dibersihkan terpisah.'
                 : 'Data yang dihapus tidak bisa dikembalikan. Buat cadangan dulu bila masih diperlukan.'}
             </Text>
             {isCloudEnabled ? (

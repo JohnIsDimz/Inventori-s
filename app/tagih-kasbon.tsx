@@ -1,3 +1,4 @@
+import { appAlert } from '../src/utils/alert';
 /**
  * Tagih kasbon lewat WhatsApp (Sprint 17).
  *
@@ -11,7 +12,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../src/components/Icon';
@@ -72,7 +73,7 @@ export default function TagihKasbonScreen() {
 
   const send = async (row: CollectionRow) => {
     if (!row.link) {
-      Alert.alert(
+      appAlert.alert(
         'Nomor HP belum ada',
         `${row.customerName} belum punya nomor di buku pelanggan. Tambahkan nomornya dulu supaya bisa ditagih lewat WhatsApp.`,
         [
@@ -88,7 +89,7 @@ export default function TagihKasbonScreen() {
       setNotice(`${row.customerName} sudah ditandai ditagih hari ini.`);
       setPreview(null);
     } catch {
-      Alert.alert(
+      appAlert.alert(
         'WhatsApp belum terbuka',
         'Perangkat ini belum bisa membuka WhatsApp. Pesannya sudah disiapkan — bisa disalin dari tombol "Lihat pesan".',
       );

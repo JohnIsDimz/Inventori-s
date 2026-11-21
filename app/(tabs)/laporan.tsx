@@ -1,3 +1,4 @@
+import { useCan, useCanSeeProfit } from '../../src/utils/usePermissions';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
@@ -43,7 +44,7 @@ export default function LaporanScreen() {
   const router = useRouter();
   // Peran kasir tidak boleh melihat laba (lihat src/utils/permissions.ts).
   const role = useAuthStore((state) => state.role);
-  const showProfit = canSeeProfit(role);
+  const showProfit = useCanSeeProfit();
   const data = useScopedData();
   const [period, setPeriod] = useState<Period>('month');
   const [exporting, setExporting] = useState(false);
@@ -170,7 +171,7 @@ export default function LaporanScreen() {
               />
               <Card>
                 <WeeklyFlowChart buckets={weekly} />
-                {summary.cogs > 0 ? (
+                {!showProfit ? null : summary.cogs > 0 ? (
                   <Text style={styles.cogsNote}>
                     HPP barang tercatat {formatRupiah(summary.cogs)} • laba kotor {formatRupiah(summary.income - summary.cogs)}
                   </Text>
@@ -222,8 +223,8 @@ export default function LaporanScreen() {
                     <View style={styles.dailyValueCol}>
                       <Text style={styles.dailyIncome}>{formatRupiah(day.income)}</Text>
                       <Text style={[styles.dailyProfit, { color: day.profit >= 0 ? colors.primary : colors.danger }]}>
-                        {day.profit >= 0 ? '+' : '−'}
-                        {formatRupiah(Math.abs(day.profit))}
+                        {showProfit ? (day.profit >= 0 ? '+' : '−') : ''}
+                        {showProfit ? formatRupiah(Math.abs(day.profit)) : '—'}
                       </Text>
                     </View>
                   </View>
@@ -270,7 +271,7 @@ export default function LaporanScreen() {
                         <Text style={styles.rankMeta}>
                           {row.txCount} nota • {row.percent.toFixed(1)}% omzet
                           {row.qty > 0 ? ` • ${row.qty} barang` : ''}
-                          {row.margin > 0 ? ` • untung ${formatRupiah(row.margin)}` : ''}
+                          {showProfit && row.margin > 0 ? ` • untung ${formatRupiah(row.margin)}` : ''}
                         </Text>
                       </View>
                     </View>
@@ -365,7 +366,7 @@ export default function LaporanScreen() {
                       <View style={{ alignItems: 'flex-end', maxWidth: 96 }}>
                         <Text style={styles.productMarginLabel}>Margin</Text>
                         <Text style={styles.productMargin}>
-                          {product.hasCost ? formatRupiah(product.margin) : '—'}
+                          {showProfit && product.hasCost ? formatRupiah(product.margin) : '—'}
                         </Text>
                       </View>
                     </View>
@@ -388,10 +389,10 @@ export default function LaporanScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.opnameTitle}>{opnameRangeText(opnameRange)}</Text>
                 <Text style={styles.opnameDesc}>
-                  {opnameRange.lossValue > 0
-                    ? `Nilai barang kurang ${formatRupiah(opnameRange.lossValue)}${opnameRange.gainValue > 0 ? ` • lebih ${formatRupiah(opnameRange.gainValue)}` : ''}`
+                  {!showProfit ? 'Nilai hanya untuk pemilik/admin' : opnameRange.lossValue > 0
+                    ? `Nilai barang kurang ${showProfit ? formatRupiah(opnameRange.lossValue) : '—'}${opnameRange.gainValue > 0 ? ` • lebih ${showProfit ? formatRupiah(opnameRange.gainValue) : '—'}` : ''}`
                     : opnameRange.gainValue > 0
-                      ? `Nilai barang lebih ${formatRupiah(opnameRange.gainValue)}`
+                      ? `Nilai barang lebih ${showProfit ? formatRupiah(opnameRange.gainValue) : '—'}`
                       : 'Tidak ada nilai yang hilang di periode ini.'}
                 </Text>
               </View>
@@ -421,7 +422,7 @@ export default function LaporanScreen() {
                       {row.name}
                     </Text>
                     <Text style={styles.opnameRowValue}>
-                      {row.units} {row.unit} • {formatRupiah(row.value)}
+                      {row.units} {row.unit} • {showProfit ? formatRupiah(row.value) : '—'}
                     </Text>
                   </View>
                 ))}
@@ -452,7 +453,7 @@ export default function LaporanScreen() {
               disabled={!hasAnyData || exporting}
               onPress={async () => {
                 setExporting(true);
-                await shareReportPdf(data, range.from, range.to);
+                await shareReportPdf(data, range.from, range.to, showProfit);
                 setExporting(false);
               }}
             >
@@ -470,7 +471,7 @@ export default function LaporanScreen() {
               disabled={!hasAnyData || exporting}
               onPress={async () => {
                 setExporting(true);
-                await shareCsv(data, range.from, range.to);
+                await shareCsv(data, range.from, range.to, showProfit);
                 setExporting(false);
               }}
             >
@@ -516,18 +517,18 @@ export default function LaporanScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.opnameStatLabel}>Nilai kurang</Text>
               <Text style={[styles.opnameStatValue, { color: colors.amber }]}>
-                {formatRupiah(opnameRange.lossValue)}
+                {showProfit ? formatRupiah(opnameRange.lossValue) : '—'}
               </Text>
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.opnameStatLabel}>Nilai lebih</Text>
               <Text style={[styles.opnameStatValue, { color: colors.secondary }]}>
-                {formatRupiah(opnameRange.gainValue)}
+                {showProfit ? formatRupiah(opnameRange.gainValue) : '—'}
               </Text>
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.opnameStatLabel}>Selisih bersih</Text>
-              <Text style={styles.opnameStatValue}>{formatRupiah(opnameRange.netValue)}</Text>
+              <Text style={styles.opnameStatValue}>{showProfit ? formatRupiah(opnameRange.netValue) : '—'}</Text>
             </View>
           </View>
 
@@ -539,7 +540,7 @@ export default function LaporanScreen() {
               >
                 <Text style={styles.opnameSessionDate}>{formatTanggalSingkat(row.at)}</Text>
                 <Text style={styles.opnameSessionValue}>
-                  {row.lossValue > 0 ? `−${formatRupiah(row.lossValue)}` : 'Cocok'}
+                  {!showProfit ? '—' : row.lossValue > 0 ? `−${formatRupiah(row.lossValue)}` : 'Cocok'}
                 </Text>
               </View>
             ))}
@@ -552,7 +553,7 @@ export default function LaporanScreen() {
                 {opnameRange.losses.map((row) => (
                   <Text key={row.name} style={styles.opnameLossLine}>
                     {row.name} — {row.units} {row.unit} ({row.times}x dihitung) •{' '}
-                    {formatRupiah(row.value)}
+                    {showProfit ? formatRupiah(row.value) : '—'}
                   </Text>
                 ))}
               </Card>

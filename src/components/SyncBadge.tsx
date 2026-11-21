@@ -12,7 +12,8 @@ export function SyncBadge({ compact = false }: { compact?: boolean }) {
   const status = useSyncStore((s) => s.status);
   const pending = useSyncStore((s) => s.pending);
   const online = useSyncStore((s) => s.online);
-  const label = syncStatusLabel({ status, pending, online }, isCloudEnabled);
+  const droppedCount = useSyncStore((s) => s.droppedCount);
+  const label = syncStatusLabel({ status, pending, online, droppedCount }, isCloudEnabled);
 
   const tone = !isCloudEnabled
     ? colors.textDim

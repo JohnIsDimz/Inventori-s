@@ -1,6 +1,7 @@
+import { appAlert } from '../../src/utils/alert';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DebtPaymentSheet } from '../../src/components/DebtPaymentSheet';
@@ -71,7 +72,7 @@ export default function KasbonDetailScreen() {
   };
 
   const confirmDelete = () => {
-    Alert.alert('Hapus kasbon?', 'Riwayat pembayaran ikut terhapus dan saldo dihitung ulang.', [
+    appAlert.alert('Hapus kasbon?', 'Riwayat pembayaran ikut terhapus dan saldo dihitung ulang.', [
       { text: 'Batal', style: 'cancel' },
       {
         text: 'Hapus',
@@ -79,7 +80,7 @@ export default function KasbonDetailScreen() {
         onPress: () => {
           const result = deleteReceivable(receivable.id);
           if (!result.ok) {
-            Alert.alert('Tidak bisa dihapus', result.reason);
+            appAlert.alert('Tidak bisa dihapus', result.reason);
             return;
           }
           router.back();
@@ -193,7 +194,7 @@ export default function KasbonDetailScreen() {
                     <Text style={styles.paymentAmount}>{formatRupiah(payment.amount)}</Text>
                     <Text style={styles.paymentMeta}>
                       {formatTanggalSingkat(payment.paidAt)} • {formatJam(payment.paidAt)} •{' '}
-                      {payment.method === 'cash' ? 'Tunai' : payment.method === 'qris' ? 'QRIS' : 'Transfer'}
+                      {payment.method === 'kasbon' ? 'Uang muka pesanan (penyesuaian)' : payment.method === 'cash' ? 'Tunai' : payment.method === 'qris' ? 'QRIS' : 'Transfer'}
                     </Text>
                   </View>
                 </View>

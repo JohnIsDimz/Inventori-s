@@ -1,3 +1,4 @@
+import { friendlySyncError } from './sync/errors';
 /**
  * Kendali akun: keluar dari toko, serah terima, dan hapus akun.
  *
@@ -36,7 +37,7 @@ export async function previewAccountDelete(): Promise<DeletePreview> {
   if (!sb) fail(CLOUD_ONLY);
 
   const { data, error } = await sb!.rpc('account_delete_preview');
-  if (error) fail(error.message);
+  if (error) fail(friendlySyncError(error));
 
   const raw = (data ?? {}) as Record<string, unknown>;
   return {
@@ -54,7 +55,7 @@ export async function deleteMyAccount(): Promise<{ outletsDeleted: number; membe
   if (!sb) fail(CLOUD_ONLY);
 
   const { data, error } = await sb!.rpc('delete_my_account');
-  if (error) fail(error.message);
+  if (error) fail(friendlySyncError(error));
 
   const raw = (data ?? {}) as Record<string, unknown>;
   return {
@@ -69,7 +70,7 @@ export async function leaveOutlet(outletId: string): Promise<void> {
   if (!sb) fail(CLOUD_ONLY);
 
   const { error } = await sb!.rpc('leave_outlet', { p_outlet: outletId });
-  if (error) fail(error.message);
+  if (error) fail(friendlySyncError(error));
 }
 
 /** Serahkan kepemilikan toko ke anggota lain (pemilik lama menjadi admin). */
@@ -78,5 +79,5 @@ export async function transferOwnership(outletId: string, userId: string): Promi
   if (!sb) fail(CLOUD_ONLY);
 
   const { error } = await sb!.rpc('transfer_ownership', { p_outlet: outletId, p_to: userId });
-  if (error) fail(error.message);
+  if (error) fail(friendlySyncError(error));
 }

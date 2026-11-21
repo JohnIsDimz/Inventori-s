@@ -47,15 +47,18 @@ export function BarcodeScanner({
   const [manual, setManual] = useState('');
   const [hint, setHint] = useState<string | null>(null);
   const handled = useRef(false);
+  const requested = useRef(false);
 
   useEffect(() => {
     if (!visible) {
+      requested.current = false;
       handled.current = false;
       setManual('');
       setHint(null);
       return;
     }
-    if (permission && !permission.granted && permission.canAskAgain) {
+    if (permission && !permission.granted && permission.canAskAgain && !requested.current) {
+      requested.current = true;
       requestPermission().catch(() => setHint('Izin kamera tidak bisa diminta.'));
     }
   }, [visible, permission, requestPermission]);
@@ -79,7 +82,7 @@ export function BarcodeScanner({
         </View>
 
         <View style={styles.cameraBox}>
-          {permission?.granted ? (
+          {visible && permission?.granted ? (
             <CameraView
               style={StyleSheet.absoluteFill}
               facing="back"

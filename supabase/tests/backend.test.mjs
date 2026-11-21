@@ -24,8 +24,15 @@ await db.exec(`
   do $$ begin create role anon; exception when duplicate_object then null; end $$;
 `);
 
+await db.exec(`
+  grant usage on schema public to anon, authenticated;
+  alter default privileges in schema public grant all on tables to authenticated;
+  alter default privileges in schema public grant all on sequences to authenticated;
+  alter default privileges in schema public grant execute on functions to anon, authenticated;
+`);
+
 // ---- jalankan migrasi ----
-for (const file of ['0001_init.sql', '0002_rls.sql', '0003_rpc.sql', '0004_sprint2.sql', '0005_sprint3.sql', '0006_skala.sql', '0007_sprint4.sql', '0008_sprint5.sql', '0009_sprint7.sql', '0010_sprint8.sql', '0011_sprint10.sql']) {
+for (const file of ['0001_init.sql', '0002_rls.sql', '0003_rpc.sql', '0004_sprint2.sql', '0005_sprint3.sql', '0006_skala.sql', '0007_sprint4.sql', '0008_sprint5.sql', '0009_sprint7.sql', '0010_sprint8.sql', '0011_sprint10.sql', '0012_audit_fixes.sql']) {
   let sql = fs.readFileSync(`${MIG}/${file}`, 'utf8');
   if (file === '0001_init.sql') sql = sql.replace('create extension if not exists "pgcrypto";', '');
   try {
@@ -36,13 +43,6 @@ for (const file of ['0001_init.sql', '0002_rls.sql', '0003_rpc.sql', '0004_sprin
     process.exit(1);
   }
 }
-
-await db.exec(`
-  grant usage on schema public to authenticated;
-  grant all on all tables in schema public to authenticated;
-  grant all on all sequences in schema public to authenticated;
-  grant execute on all functions in schema public to authenticated;
-`);
 
 const OWNER = '11111111-1111-1111-1111-111111111111';
 const KASIR = '22222222-2222-2222-2222-222222222222';
@@ -410,15 +410,16 @@ await q(
 );
 await db.exec('set role authenticated');
 const movesBefore = (await q('select count(*)::int as n from public.stock_moves'))[0].n;
+await db.exec('reset role'); // prune_old_data hanya boleh dipanggil service_role / cron server
 const pruned = (await q('select public.prune_old_data() as r'))[0].r;
+let guardErr = null;
+try { await q('select public.prune_old_data(5, 5)'); } catch (e) { guardErr = e.message; }
+await db.exec('set role authenticated');
 must(pruned.stock_moves >= 1, 'prune menghapus gerak stok lebih tua dari batas');
 const movesAfter = (await q('select count(*)::int as n from public.stock_moves'))[0].n;
 must(movesAfter === movesBefore - Number(pruned.stock_moves), 'gerak stok baru tetap tersimpan');
 const stockUntouched = (await q('select stock from public.products where id = $1', [prod]))[0].stock;
 must(stockUntouched !== null, 'stok terkini tidak ikut terhapus saat retensi');
-
-let guardErr = null;
-try { console.log(await q('select public.prune_old_data(5, 5)')); } catch (e) { guardErr = e.message; }
 must(!!guardErr && /terlalu pendek/i.test(guardErr), 'retensi terlalu pendek ditolak');
 
 // Pemakaian per outlet
@@ -928,6 +929,199 @@ await q('select public.sync_order($1::jsonb)', [
 ]);
 const dpReset = (await q('select deposit from public.orders where id = $1', [dpOrder]))[0];
 must(Number(dpReset.deposit) === 0, 'DP ikut diperbarui saat rincian dikirim ulang');
+
+console.log('\n== 25. regresi audit keamanan ==');
+
+// 25a. _apply_stock tidak boleh bisa dipanggil langsung oleh authenticated/anon
+await act(KASIR);
+await db.exec('set role authenticated');
+let internalStockErr = null;
+try {
+  await q("select public._apply_stock($1, 999, 'opening', null, 'bypass')", [orderProduct]);
+} catch (e) { internalStockErr = e.message; }
+must(/permission denied/i.test(internalStockErr ?? ''), '_apply_stock tertutup dari authenticated');
+
+// 25b. Anti-IDOR lintas toko pada sync_order
+await act(OUTSIDER);
+const rivalOutlet = (await q('select public.create_outlet($1, $2) as id', ['Toko Rival', 'TR99']))[0].id;
+let idorOrderErr = null;
+try {
+  await q('select public.sync_order($1::jsonb)', [
+    JSON.stringify({
+      id: dpOrder,
+      outlet_id: rivalOutlet,
+      customer_name: 'Dibajak',
+      items: [{ name: 'Palsu', qty: 1, price: 100 }],
+    }),
+  ]);
+} catch (e) { idorOrderErr = e.message; }
+must(!!idorOrderErr && /bukan milik toko/i.test(idorOrderErr), 'sync_order menolak penimpaan pesanan toko lain (IDOR)');
+const victimItems = (await q('select count(*)::int as n from public.order_items where order_id = $1', [dpOrder]))[0].n;
+await act(OWNER);
+const victimItemsOwner = (await q('select count(*)::int as n from public.order_items where order_id = $1', [dpOrder]))[0].n;
+must(victimItems === 0 && victimItemsOwner === 1, 'rincian pesanan korban tetap utuh');
+
+// 25c. Kasir tidak boleh memanipulasi stok/nama barang lama lewat sync_product, hapus order, atau void kasbon
+await act(KASIR);
+let kasirTamperErr = null;
+try {
+  await q('select public.sync_product($1::jsonb)', [
+    JSON.stringify({
+      id: orderProduct,
+      outlet_id: orderOutlet,
+      name: 'Kue Lapis',
+      unit: 'pcs',
+      sell_price: 5000,
+      cost_price: 3000,
+      stock_delta: 50,
+      stock_reason: 'opening',
+      stock_ref: uuid(),
+    }),
+  ]);
+} catch (e) { kasirTamperErr = e.message; }
+must(!!kasirTamperErr && /pemilik atau admin/i.test(kasirTamperErr), 'kasir ditolak menambah stok barang lama lewat sync_product');
+
+const delOrders = await q('delete from public.orders where id = $1 returning id', [dpOrder]);
+must(delOrders.length === 0, 'RLS mencegah kasir menghapus pesanan secara permanen');
+
+await act(OWNER);
+const rcvId = (await q(
+  `insert into public.receivables (outlet_id, customer_name, amount, status) values ($1, 'Bu Ani', 25000, 'open') returning id`,
+  [orderOutlet],
+))[0].id;
+await act(KASIR);
+let rcvVoidErr = null;
+try {
+  await q(`update public.receivables set status = 'void' where id = $1`, [rcvId]);
+} catch (e) { rcvVoidErr = e.message; }
+must(!!rcvVoidErr, 'kasir ditolak mem-void kasbon langsung lewat tabel');
+
+// 25d. Undangan: owner tidak bisa turun peran, anggota nonaktif tidak bisa reaktivasi mandiri
+await act(OWNER);
+const selfInvite = (await q('select public.create_invite($1, $2, 24) as code', [orderOutlet, 'kasir']))[0].code;
+let selfRedeemErr = null;
+try { await q('select public.redeem_invite($1)', [selfInvite]); } catch (e) { selfRedeemErr = e.message; }
+must(!!selfRedeemErr && /sudah terdaftar/i.test(selfRedeemErr), 'owner tunggal dicegah menurunkan perannya lewat kode undangan');
+
+const kMemberId = (await q('select id from public.members where outlet_id = $1 and user_id = $2', [orderOutlet, KASIR]))[0].id;
+await q('select public.set_member_active($1, false)', [kMemberId]);
+await act(KASIR);
+let reactivateErr = null;
+try { await q('select public.redeem_invite($1)', [selfInvite]); } catch (e) { reactivateErr = e.message; }
+must(!!reactivateErr && /dinonaktifkan/i.test(reactivateErr), 'anggota nonaktif tidak bisa mengaktifkan diri kembali');
+await act(OWNER);
+await q('select public.set_member_active($1, true)', [kMemberId]);
+
+// 25e. sync_transaction: batas diskon baris, pengeluaran tidak memotong stok, & audit harga kasir
+let itemDiscErr = null;
+try {
+  await q('select public.sync_transaction($1::jsonb)', [
+    JSON.stringify({
+      outlet_id: orderOutlet,
+      client_tx_id: uuid(),
+      type: 'sale',
+      method: 'cash',
+      items: [
+        { product_id: orderProduct, name: 'Kue Lapis', qty: 1, price: 5000, discount: 9000 },
+        { name: 'Tambahan', qty: 1, price: 10000 },
+      ],
+    }),
+  ]);
+} catch (e) { itemDiscErr = e.message; }
+must(!!itemDiscErr && /melebihi harga baris/i.test(itemDiscErr), 'diskon barang > subtotal baris ditolak');
+
+const stockBeforeExp = Number((await q('select stock from public.products where id = $1', [orderProduct]))[0].stock);
+await q('select public.sync_transaction($1::jsonb)', [
+  JSON.stringify({
+    outlet_id: orderOutlet,
+    client_tx_id: uuid(),
+    type: 'expense',
+    method: 'cash',
+    items: [{ product_id: orderProduct, name: 'Kue Lapis', qty: 2, price: 3000 }],
+  }),
+]);
+const stockAfterExp = Number((await q('select stock from public.products where id = $1', [orderProduct]))[0].stock);
+must(stockAfterExp === stockBeforeExp, 'pengeluaran dengan rincian barang tidak mengurangi stok di server');
+
+await act(KASIR);
+await q('select public.sync_transaction($1::jsonb)', [
+  JSON.stringify({
+    outlet_id: orderOutlet,
+    client_tx_id: uuid(),
+    type: 'sale',
+    method: 'cash',
+    items: [{ product_id: orderProduct, name: 'Kue Lapis', qty: 1, price: 2500 }],
+  }),
+]);
+await act(OWNER);
+const overrideAudit = (await q(
+  "select count(*)::int as n from public.audit_logs where outlet_id = $1 and action = 'transaction.price_override'",
+  [orderOutlet],
+))[0].n;
+must(overrideAudit === 1, 'penjualan di bawah harga katalog oleh kasir tercatat di audit');
+
+// 25f. Shift menghitung pembayaran kasbon tunai & menolak perubahan setelah ditutup
+const shAudit = uuid();
+const openedAt = new Date(Date.now() + 1_000).toISOString();
+await q('select public.sync_shift($1::jsonb)', [
+  JSON.stringify({ id: shAudit, outlet_id: orderOutlet, opened_at: openedAt, opening_cash: 20000 }),
+]);
+await q(
+  `insert into public.receivable_payments (receivable_id, amount, method, paid_at) values ($1, 15000, 'cash', $2)`,
+  [rcvId, new Date(Date.now() + 2_000).toISOString()],
+);
+await q('select public.sync_shift($1::jsonb)', [
+  JSON.stringify({
+    id: shAudit,
+    outlet_id: orderOutlet,
+    opened_at: openedAt,
+    opening_cash: 20000,
+    closed_at: new Date(Date.now() + 5_000).toISOString(),
+    closing_cash: 35000,
+  }),
+]);
+const shSaved = (await q('select expected_cash, difference from public.shifts where id = $1', [shAudit]))[0];
+must(Number(shSaved.expected_cash) === 35000 && Number(shSaved.difference) === 0, 'shift menghitung pembayaran kasbon tunai');
+
+let reopenErr = null;
+try {
+  await q('select public.sync_shift($1::jsonb)', [
+    JSON.stringify({ id: shAudit, outlet_id: orderOutlet, opening_cash: 0, closing_cash: 999999, closed_at: new Date().toISOString() }),
+  ]);
+} catch (e) { reopenErr = e.message; }
+must(!!reopenErr && /sudah ditutup/i.test(reopenErr), 'shift yang sudah ditutup tidak bisa dimodifikasi ulang');
+
+// 25g. Attempts must survive invalid-code responses (exceptions would roll back counters).
+await act(OUTSIDER);
+await db.exec('reset role');
+await q('delete from public.invite_attempts where user_id = $1', [OUTSIDER]);
+await db.exec('set role authenticated');
+for (let i = 0; i < 5; i++) {
+  const result = (await q('select public.redeem_invite($1) as id', ['NOTFOUND']))[0];
+  must(result.id === null, `kode tak cocok ke-${i + 1} ditolak tanpa membuka rincian`);
+}
+await db.exec('reset role');
+const attemptsStored = (await q('select count(*)::int as n from public.invite_attempts where user_id = $1', [OUTSIDER]))[0].n;
+must(attemptsStored === 5, 'percobaan gagal tetap tersimpan, bukan dibatalkan bersama galat');
+await db.exec('set role authenticated');
+await act(OWNER);
+const limitedCode = (await q('select public.create_invite($1, $2, 24) as code', [orderOutlet, 'kasir']))[0].code;
+await act(OUTSIDER);
+const limited = (await q('select public.redeem_invite($1) as id', [limitedCode]))[0];
+must(limited.id === null, 'batas percobaan menolak kode valid sekalipun sampai masa tunggu selesai');
+
+// 25h. Non-cash offsets never inflate the physical cash drawer.
+await act(OWNER);
+const offsetShift = uuid();
+const offsetOpened = new Date(Date.now() + 10000).toISOString();
+await q('select public.sync_shift($1::jsonb)', [JSON.stringify({ id: offsetShift, outlet_id: orderOutlet, opened_at: offsetOpened, opening_cash: 10000 })]);
+await q('update public.receivables set updated_at = $2 where id = $1', [rcvId, '2020-01-01T00:00:00Z']);
+await q(`insert into public.receivable_payments (receivable_id, amount, method, source, paid_at) values ($1, 1000, 'cash', 'deposit', $2)`, [rcvId, new Date(Date.now() + 11000).toISOString()]);
+const touched = (await q('select updated_at from public.receivables where id = $1', [rcvId]))[0];
+must(new Date(touched.updated_at).getUTCFullYear() > 2020, 'cicilan menyentuh waktu pembaruan induk agar tertarik di perangkat lain');
+await q('select public.sync_shift($1::jsonb)', [JSON.stringify({ id: offsetShift, outlet_id: orderOutlet, opened_at: offsetOpened, closed_at: new Date(Date.now() + 12000).toISOString(), opening_cash: 10000, closing_cash: 10000 })]);
+const offsetSaved = (await q('select expected_cash from public.shifts where id = $1', [offsetShift]))[0];
+must(Number(offsetSaved.expected_cash) === 10000, 'uang muka historis tidak dihitung ulang sebagai penerimaan tunai shift');
 
 console.log(`\nSELESAI: ${pass} pemeriksaan lulus${process.exitCode ? ' (ADA YANG GAGAL)' : ', semua hijau'}`);
 await db.close();
