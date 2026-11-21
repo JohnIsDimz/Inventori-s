@@ -1,10 +1,10 @@
+import { appAlert } from '../src/utils/alert';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -89,6 +89,8 @@ export default function CatatScreen() {
   const [newCategory, setNewCategory] = useState('');
   const [catError, setCatError] = useState<string | null>(null);
 
+  const saveLock = useRef(false);
+  useEffect(() => { saveLock.current = false; }, [digits, items, method, note]);
   const amount = parseNumber(digits);
   const visibleCategories = useMemo(
     () => categories.filter((c) => c.type === txType),
@@ -116,7 +118,7 @@ export default function CatatScreen() {
       if (source === 'camera') {
         const permission = await ImagePicker.requestCameraPermissionsAsync();
         if (!permission.granted) {
-          Alert.alert('Izin kamera dibutuhkan', 'Aktifkan izin kamera untuk memfoto nota.');
+          appAlert.alert('Izin kamera dibutuhkan', 'Aktifkan izin kamera untuk memfoto nota.');
           return;
         }
         const result = await ImagePicker.launchCameraAsync({ quality: 0.6 });
@@ -126,7 +128,7 @@ export default function CatatScreen() {
         if (!result.canceled) setPhotoUri(await persistPhoto(result.assets[0].uri));
       }
     } catch {
-      Alert.alert('Gagal membuka kamera', 'Coba lagi atau lampirkan dari galeri.');
+      appAlert.alert('Gagal membuka kamera', 'Coba lagi atau lampirkan dari galeri.');
     }
   };
 
@@ -151,12 +153,13 @@ export default function CatatScreen() {
     return `INV-${stamp}-${String(todayCount + 1).padStart(3, '0')}`;
   };
 
-  const buildCurrentReceipt = () =>
+  const buildCurrentReceipt = (invoice?: string) =>
     buildReceiptText({
       storeName: data.profile.name || 'Toko Saya',
       storeCode: data.profile.code,
       storePhone: data.profile.phone,
-      invoice: generateInvoice(),
+      invoice: invoice ?? 'PRATINJAU',
+      type: txType,
       createdAt: when.toISOString(),
       items,
       total: amount,
@@ -183,6 +186,7 @@ export default function CatatScreen() {
   };
 
   const save = (again = false) => {
+    if (saveLock.current) return;
     if (amount <= 0) {
       setError('Nominal transaksi belum diisi.');
       return;
@@ -192,6 +196,7 @@ export default function CatatScreen() {
       return;
     }
     setError(null);
+    saveLock.current = true;
     setSaving(true);
 
     const result = addTransaction({
@@ -209,13 +214,15 @@ export default function CatatScreen() {
     });
 
     if (!result.ok) {
+      saveLock.current = false;
       setSaving(false);
       setError(result.reason);
       return;
     }
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    setReceiptText(buildCurrentReceipt());
+    setReceiptText(buildCurrentReceipt(result.id));
+    if (data.settings.autoPrint) setReceiptSheet(true);
     setSavedInfo({ amount, isKasbon });
     setSaving(false);
     setSavedPhotoTaken(true);

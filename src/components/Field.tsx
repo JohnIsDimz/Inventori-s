@@ -36,6 +36,8 @@ export function TextField({
         {icon ? <Icon name={icon} size={16} color={colors.textFaint} strokeWidth={1.8} /> : null}
         {prefix ? <Text style={styles.prefix}>{prefix}</Text> : null}
         <TextInput
+          accessibilityLabel={props.accessibilityLabel ?? label ?? props.placeholder}
+          accessibilityHint={props.accessibilityHint ?? hint}
           {...props}
           multiline={multiline}
           placeholderTextColor={colors.textFaint}

@@ -1,3 +1,5 @@
+import { friendlyAuthError, friendlySyncError } from '../src/services/sync/errors';
+import { useCan, useCanSeeProfit } from '../src/utils/usePermissions';
 /**
  * Log audit: siapa mengubah apa, kapan.
  *
@@ -98,7 +100,7 @@ export default function AuditScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { outletId, role } = useAuthStore();
-  const allowed = can(role, 'audit.view');
+  const allowed = useCan('audit.view');
 
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -113,7 +115,7 @@ export default function AuditScreen() {
     });
     setLoading(false);
     if (rpcError) {
-      setError(rpcError.message);
+      setError(friendlySyncError(rpcError));
       return;
     }
     setRows((data ?? []) as AuditRow[]);

@@ -1,3 +1,5 @@
+import { localStore } from '../services/db/local';
+import { setAccessSession } from './access';
 /**
  * Sesi & peran pengguna.
  *
@@ -53,6 +55,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ ready: true });
         return;
       }
+      await prepareUser(user.id);
       set({ userId: user.id, email: user.email ?? null });
       await get().refreshMembership();
     } catch (error) {
@@ -64,18 +67,32 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signIn: async (email, password) => {
     if (!supabase) return 'Masuk belum bisa dipakai di perangkat ini.';
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-    if (error) return friendlyAuthError(error);
-    set({ userId: data.user?.id ?? null, email: data.user?.email ?? null, error: null });
-    await get().refreshMembership();
-    return null;
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (error) return friendlyAuthError(error);
+      if (data.user) await prepareUser(data.user.id);
+      set({ role: null, outletId: null, outletName: null });
+      set({ userId: data.user?.id ?? null, email: data.user?.email ?? null, error: null });
+      await get().refreshMembership();
+      return null;
+    } catch (error) {
+      set({ userId: null, email: null, role: null, outletId: null, outletName: null });
+      return friendlyAuthError(error);
+    }
   },
 
   signOut: async () => {
-    if (supabase) await supabase.auth.signOut();
+    const { wipeDeviceData } = await import('../services/wipe');
+    await wipeDeviceData();
+    await localStore.kvDel('auth:last_user_id');
+    await localStore.kvDel('auth:last_outlet_id');
+    if (supabase) {
+      const { error } = await supabase.auth.signOut({ scope: 'local' });
+      if (error) throw new Error(friendlyAuthError(error));
+    }
     set({ userId: null, email: null, role: null, outletId: null, outletName: null });
   },
 
@@ -91,11 +108,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       .limit(1);
 
     if (error) {
-      set({ error: friendlyAuthError(error) });
+      set({ role: null, outletId: null, outletName: null, error: friendlyAuthError(error) });
       return;
     }
 
     const row = (data?.[0] ?? null) as MembershipRow | null;
+    const nextOutlet = typeof row?.outlet_id === 'string' ? row.outlet_id : '';
+    const previousOutlet = await localStore.kvGet('auth:last_outlet_id');
+    if (previousOutlet && previousOutlet !== nextOutlet) {
+      const { wipeDeviceData } = await import('../services/wipe');
+      await wipeDeviceData();
+    }
+    await localStore.kvSet('auth:last_outlet_id', nextOutlet);
+
     if (!row) {
       set({ role: null, outletId: null, outletName: null, error: 'Akun ini belum terhubung ke toko mana pun.' });
       return;
@@ -112,4 +137,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
 function msg(error: unknown): string {
   return error instanceof Error ? friendlyAuthError(error) : 'Terjadi kesalahan.';
+}
+
+useAuthStore.subscribe((state) => setAccessSession(state, isCloudEnabled));
+setAccessSession(useAuthStore.getState(), isCloudEnabled);
+
+async function prepareUser(userId: string): Promise<void> {
+  const previous = await localStore.kvGet('auth:last_user_id');
+  if (previous !== userId) {
+    const { wipeDeviceData } = await import('../services/wipe');
+    await wipeDeviceData();
+  }
+  await localStore.kvSet('auth:last_user_id', userId);
 }

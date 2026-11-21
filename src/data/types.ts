@@ -147,6 +147,7 @@ export interface Shift {
 /** Pemindahan saldo kas usaha → tabungan modal. */
 export interface CapitalAllocation {
   id: string;
+  outletId?: string;
   amount: number;
   createdAt: string;
   note?: string;
@@ -384,6 +385,7 @@ export type MutationResult = { ok: true; id?: string } | { ok: false; reason: st
  * Semua id sudah diterjemahkan kembali ke id lokal sebelum sampai di sini.
  */
 export interface RemotePatch {
+  deleted?: Partial<Record<'products' | 'transactions' | 'receivables' | 'payables' | 'categories' | 'allocations' | 'orders', string[]>>;
   products?: Product[];
   transactions?: Transaction[];
   receivables?: Receivable[];

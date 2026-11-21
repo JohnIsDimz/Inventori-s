@@ -39,7 +39,7 @@ export interface PrinterResult {
 const SERVICE_UUID = '000018f0-0000-1000-8000-00805f9b34fb';
 const WRITE_UUID = '00002af1-0000-1000-8000-00805f9b34fb';
 const PRINTER_NAME = /rpp|printer|pos|58|thermal|goojprt|xp-|mtp|blue|mini/i;
-const CHUNK_SIZE = 180;
+const CHUNK_SIZE = 20;
 
 /* --------------------------------------------------------- modul opsional --- */
 
@@ -85,7 +85,7 @@ export function printerSupportHint(): string {
 
 let manager: BleManager | null = null;
 let device: BleDevice | null = null;
-let writeChar: { service: string; characteristic: string } | null = null;
+let writeChar: { service: string; characteristic: string; withResponse: boolean } | null = null;
 let connected: PrinterDevice | null = null;
 const listeners = new Set<(state: PrinterDevice | null) => void>();
 
@@ -187,13 +187,13 @@ export async function scanPrinters(
 async function findWriteCharacteristic(
   ble: BleManager,
   target: BleDevice,
-): Promise<{ service: string; characteristic: string } | null> {
+): Promise<{ service: string; characteristic: string; withResponse: boolean } | null> {
   // 1) Coba layanan standar printer thermal lebih dulu.
   const standard = await ble
     .characteristicsForDevice(target.id, SERVICE_UUID)
     .catch(() => null);
   const direct = standard?.find((c) => c.uuid.toLowerCase() === WRITE_UUID);
-  if (direct) return { service: SERVICE_UUID, characteristic: direct.uuid };
+  if (direct && (direct.isWritableWithResponse || direct.isWritableWithoutResponse)) return { service: SERVICE_UUID, characteristic: direct.uuid, withResponse: direct.isWritableWithResponse };
 
   // 2) Kalau tidak ada, telusuri semua layanan dan ambil characteristic yang
   //    bisa ditulis (sebagian printer memakai UUID custom).
@@ -204,7 +204,7 @@ async function findWriteCharacteristic(
       .characteristicsForDevice(target.id, service.uuid)
       .catch(() => null);
     const writable = chars?.find((c) => c.isWritableWithResponse || c.isWritableWithoutResponse);
-    if (writable) return { service: service.uuid, characteristic: writable.uuid };
+    if (writable) return { service: service.uuid, characteristic: writable.uuid, withResponse: writable.isWritableWithResponse };
   }
   return null;
 }
@@ -248,7 +248,7 @@ export async function connectPrinter(id: string, name?: string): Promise<Printer
   } catch (error) {
     return {
       ok: false,
-      message: `Gagal menyambung: ${error instanceof Error ? error.message : 'tidak diketahui'}`,
+      message: 'Printer belum tersambung. Pastikan printer menyala, dekat, dan izin Bluetooth aktif.',
     };
   }
 }
@@ -301,21 +301,22 @@ export async function printReceiptText(text: string): Promise<PrinterResult> {
   }
 
   try {
+    const targetId = device.id;
+    const channel = writeChar;
     const bytes = toBytes(buildEscPos(text));
     for (let offset = 0; offset < bytes.length; offset += CHUNK_SIZE) {
       const chunk = bytes.subarray(offset, offset + CHUNK_SIZE);
-      await ble.writeCharacteristicWithResponseForDevice(
-        device.id,
-        writeChar.service,
-        writeChar.characteristic,
-        base64Encode(chunk),
-      );
+      const write = channel.withResponse
+        ? ble.writeCharacteristicWithResponseForDevice.bind(ble)
+        : ble.writeCharacteristicWithoutResponseForDevice.bind(ble);
+      await write(targetId, channel.service, channel.characteristic, base64Encode(chunk));
+      if (!channel.withResponse) await new Promise((resolve) => setTimeout(resolve, 20));
     }
     return { ok: true, message: 'Struk terkirim ke printer.' };
   } catch (error) {
     return {
       ok: false,
-      message: `Gagal mencetak: ${error instanceof Error ? error.message : 'tidak diketahui'}`,
+      message: 'Struk belum selesai dicetak. Periksa kertas dan sambungan printer, lalu coba lagi.',
     };
   }
 }

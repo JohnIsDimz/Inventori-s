@@ -76,11 +76,11 @@ export function csvSafe(value: string | number): string {
  * Bersihkan teks sebelum dikirim ke printer thermal: buang karakter kontrol
  * (ESC/POS memakai 0x1B dan kawan-kawan) tapi pertahankan baris baru.
  */
-export function sanitizePrintText(value: unknown): string {
+export function sanitizePrintText(value: unknown, maxLength = 2000): string {
   return String(value ?? '')
     .replace(/\r\n?/g, '\n')
     .replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '')
-    .slice(0, 2000);
+    .slice(0, maxLength);
 }
 
 /** Ringkas teks untuk log/UI tanpa memotong di tengah karakter aneh. */

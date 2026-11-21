@@ -1,6 +1,7 @@
+import { appAlert } from '../src/utils/alert';
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TextField } from '../src/components/Field';
@@ -204,7 +205,7 @@ export default function StokScreen() {
                           style={styles.stepButton}
                           onPress={() => {
                             const result = adjustStock(product.id, -1);
-                            if (!result.ok) Alert.alert('Stok tidak bisa dikurangi', result.reason);
+                            if (!result.ok) appAlert.alert('Stok tidak bisa dikurangi', result.reason);
                           }}
                           hitSlop={10}
                           accessibilityLabel={`Kurangi stok ${product.name}`}
@@ -253,11 +254,11 @@ export default function StokScreen() {
                       <Pressable
                         hitSlop={10}
                         onPress={() =>
-                          Alert.alert('Hapus barang?', product.name, [
+                          appAlert.alert('Hapus barang?', product.name, [
                             { text: 'Batal', style: 'cancel' },
                             { text: 'Hapus', style: 'destructive', onPress: () => {
                               const result = deleteProduct(product.id);
-                              if (!result.ok) Alert.alert('Tidak bisa dihapus', result.reason);
+                              if (!result.ok) appAlert.alert('Tidak bisa dihapus', result.reason);
                             } },
                           ])
                         }

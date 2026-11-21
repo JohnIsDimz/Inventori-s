@@ -37,7 +37,7 @@ export function TabBar({ state, emitter, navigateToTab, insets }: BottomTabBarPr
     };
 
     return (
-      <Pressable key={name} onPress={onPress} style={styles.tab} accessibilityRole="tab">
+      <Pressable key={name} onPress={onPress} style={styles.tab} accessibilityRole="tab" accessibilityLabel={config.label} accessibilityState={{ selected: active }}>
         <View style={styles.iconSlot}>
           <Icon
             name={config.icon}
@@ -65,6 +65,7 @@ export function TabBar({ state, emitter, navigateToTab, insets }: BottomTabBarPr
               router.push('/pilih-transaksi');
             }}
             style={styles.fabPress}
+            accessibilityRole="button"
             accessibilityLabel="Catat transaksi"
           >
             <LinearGradient

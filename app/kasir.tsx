@@ -1,3 +1,4 @@
+import { appAlert } from '../src/utils/alert';
 /**
  * Kasir (POS) — layar jual cepat untuk warung.
  *
@@ -10,9 +11,9 @@
  * terbarui tanpa jalur data kedua.
  */
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
+  FlatList,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -92,6 +93,7 @@ export default function KasirScreen() {
   const [customerId, setCustomerId] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const saveLock = useRef(false);
   const [success, setSuccess] = useState<{ text: string; total: number; change: number; method: PayMethod } | null>(null);
   const [printState, setPrintState] = useState<string | null>(null);
 
@@ -107,18 +109,19 @@ export default function KasirScreen() {
     return list;
   }, [data.products, query]);
 
+  const productsById = useMemo(() => new Map(data.products.map((p) => [p.id, p])), [data.products]);
   const lines: CartLine[] = useMemo(
     () =>
       Object.entries(cart)
         .map(([id, qty]) => {
-          const product = data.products.find((p) => p.id === id);
+          const product = productsById.get(id);
           if (!product) return null;
           const price = unitPriceOf(product, qty);
           const discount = Math.min(parseNumber(lineDiscounts[id] ?? '') || 0, price * qty);
           return { product, qty, price, discount };
         })
         .filter((line): line is CartLine => line !== null),
-    [cart, data.products, lineDiscounts],
+    [cart, productsById, lineDiscounts],
   );
 
   // Subtotal sudah memperhitungkan harga grosir & diskon per barang.
@@ -139,8 +142,8 @@ export default function KasirScreen() {
   const addToCart = (product: Product, qty = 1) => {
     setCart((prev) => {
       const next = (prev[product.id] ?? 0) + qty;
-      if (product.stock > 0 && next > product.stock) {
-        Alert.alert('Stok tidak cukup', `Sisa stok ${product.name}: ${product.stock} ${product.unit}.`);
+      if (next > product.stock) {
+        appAlert.alert('Stok tidak cukup', `Sisa stok ${product.name}: ${product.stock} ${product.unit}.`);
         return prev;
       }
       return { ...prev, [product.id]: next };
@@ -151,7 +154,7 @@ export default function KasirScreen() {
     setCart((prev) => {
       const next = { ...prev };
       if (qty <= 0) delete next[product.id];
-      else if (product.stock > 0 && qty > product.stock) {
+      else if (qty > product.stock) {
         next[product.id] = product.stock;
       } else next[product.id] = qty;
       return next;
@@ -191,7 +194,9 @@ export default function KasirScreen() {
     setPayOpen(true);
   };
 
+  useEffect(() => { if (itemCount > 0) saveLock.current = false; }, [itemCount]);
   const save = async () => {
+    if (saveLock.current) return;
     if (lines.length === 0) {
       setError('Keranjang masih kosong.');
       return;
@@ -205,6 +210,7 @@ export default function KasirScreen() {
       return;
     }
 
+    saveLock.current = true;
     setSaving(true);
     const items: LineItem[] = lines.map((line) => ({
       productId: line.product.id,
@@ -237,6 +243,7 @@ export default function KasirScreen() {
     setSaving(false);
 
     if (!result.ok) {
+      saveLock.current = false;
       setError(result.reason);
       return;
     }
@@ -246,10 +253,10 @@ export default function KasirScreen() {
       outletName: data.outlets.length > 1 ? outletLabel(activeOutlet(data.outlets, data.activeOutletId)) : undefined,
       storeCode: data.profile.code,
       storePhone: data.profile.phone,
-      invoice: `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(
-        data.transactions.length + 1,
-      ).padStart(3, '0')}`,
-      createdAt: new Date().toISOString(),
+      invoice: result.id ?? '',
+      createdAt: useAppStore.getState().transactions.find((tx) => tx.id === result.id)?.createdAt ?? new Date().toISOString(),
+      paid: method === 'cash' ? paid : total,
+      change: Math.max(0, change),
       items,
       total,
       subtotal: totals.subtotal,
@@ -260,6 +267,7 @@ export default function KasirScreen() {
       cashier: data.profile.ownerName,
     });
 
+    setPrintState(null);
     setSuccess({ text: receipt, total, change: Math.max(0, change), method });
     setPayOpen(false);
     setCartOpen(false);
@@ -325,7 +333,18 @@ export default function KasirScreen() {
         ))}
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <FlatList
+        data={products}
+        keyExtractor={(product) => product.id}
+        numColumns={2}
+        extraData={cart}
+        initialNumToRender={16}
+        maxToRenderPerBatch={16}
+        windowSize={7}
+        contentContainerStyle={styles.content}
+        columnWrapperStyle={{ gap: spacing.sm }}
+        keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={<View style={{ gap: spacing.md }}>
         <View style={styles.searchRow}>
           <TextField
             icon="search"
@@ -345,7 +364,7 @@ export default function KasirScreen() {
           <VoiceButton
             compact
             onResult={(text) => setQuery(extractSpokenNote(text) || text)}
-            onError={(message) => Alert.alert('Input suara', message)}
+            onError={(message) => appAlert.alert('Input suara', message)}
           />
         </View>
 
@@ -368,9 +387,29 @@ export default function KasirScreen() {
               action={<Button label="Pindai barcode" icon="scan" variant="secondary" onPress={() => setScanOpen(true)} />}
             />
           </Card>
-        ) : (
-          <View style={styles.grid}>
-            {products.map((product) => {
+        ) : null}
+        </View>}
+        ListFooterComponent={
+        <Card style={{ gap: spacing.sm }}>
+          <View style={styles.helpHead}>
+            <IconBadge name="info" tone="secondary" size={32} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.helpTitle}>Jual tanpa daftar barang?</Text>
+              <Text style={styles.helpText}>
+                Pakai Catat Penjualan untuk nominal bebas tanpa mengurangi stok. Tombol mikrofon mengisi nominal dari
+                ucapan Bahasa Indonesia.
+              </Text>
+            </View>
+          </View>
+          <Button
+            label="Catat penjualan manual"
+            icon="plusCircle"
+            variant="ghost"
+            onPress={() => router.push({ pathname: '/catat', params: { type: 'sale' } })}
+          />
+        </Card>
+        }
+        renderItem={({ item: product }) => {
               const qty = cart[product.id] ?? 0;
               // Stok menipis: pengingat halus supaya kasir tidak kaget saat barang habis.
               const menipis = product.stock > 0 && product.stock <= product.minStock;
@@ -378,7 +417,7 @@ export default function KasirScreen() {
               return (
                 <Pressable
                   key={product.id}
-                  onPress={() => (habis ? Alert.alert('Stok habis', `${product.name} tidak bisa dijual sebelum stok ditambah.`) : addToCart(product))}
+                  onPress={() => (habis ? appAlert.alert('Stok habis', `${product.name} tidak bisa dijual sebelum stok ditambah.`) : addToCart(product))}
                   style={({ pressed }) => [
                     styles.tile,
                     qty > 0 && styles.tileActive,
@@ -415,29 +454,8 @@ export default function KasirScreen() {
                   </Text>
                 </Pressable>
               );
-            })}
-          </View>
-        )}
-
-        <Card style={{ gap: spacing.sm }}>
-          <View style={styles.helpHead}>
-            <IconBadge name="info" tone="secondary" size={32} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.helpTitle}>Jual tanpa daftar barang?</Text>
-              <Text style={styles.helpText}>
-                Pakai Catat Penjualan untuk nominal bebas tanpa mengurangi stok. Tombol mikrofon mengisi nominal dari
-                ucapan Bahasa Indonesia.
-              </Text>
-            </View>
-          </View>
-          <Button
-            label="Catat penjualan manual"
-            icon="plusCircle"
-            variant="ghost"
-            onPress={() => router.push({ pathname: '/catat', params: { type: 'sale' } })}
-          />
-        </Card>
-      </ScrollView>
+        }}
+      />
 
       {/* Bar keranjang */}
       {itemCount > 0 ? (
@@ -815,7 +833,7 @@ export default function KasirScreen() {
               barcode: unknownCode ?? undefined,
             });
             if (!result.ok) {
-              Alert.alert('Gagal menyimpan barang', result.reason);
+              appAlert.alert('Gagal menyimpan barang', result.reason);
               return;
             }
             setUnknownCode(null);

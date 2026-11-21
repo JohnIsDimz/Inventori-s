@@ -1,3 +1,4 @@
+import { friendlyAuthError, friendlySyncError } from '../src/services/sync/errors';
 /**
  * Daftar akun baru (mode cloud), dengan kode undangan opsional.
  *
@@ -47,7 +48,7 @@ export default function DaftarScreen() {
 
     if (signUpError) {
       setBusy(false);
-      setError(signUpError.message);
+      setError(friendlyAuthError(signUpError));
       return;
     }
 
@@ -61,12 +62,12 @@ export default function DaftarScreen() {
     await bootstrap();
 
     if (code.trim()) {
-      const { error: redeemError } = await supabase.rpc('redeem_invite', {
+      const { data: redeemedOutlet, error: redeemError } = await supabase.rpc('redeem_invite', {
         p_code: code.trim().toUpperCase(),
       });
-      if (redeemError) {
+      if (redeemError || !redeemedOutlet) {
         setBusy(false);
-        setError(`Akun dibuat, tetapi kode undangan gagal dipakai: ${redeemError.message}`);
+        setError(redeemError ? friendlySyncError(redeemError) : 'Kode undangan tidak cocok atau terlalu banyak percobaan. Periksa kode, lalu coba lagi nanti.');
         return;
       }
       await refreshMembership();

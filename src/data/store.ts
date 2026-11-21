@@ -85,6 +85,9 @@ import type {
   TxType,
 } from './types';
 import type { RemotePatch } from './types';
+import { canWrite } from './access';
+import { scopeData } from './outlets';
+import { cashBalance, shiftCash } from './selectors';
 import { debtPaidCash } from './selectors';
 import { MAX_AMOUNT, normalizeAmount, normalizeQty, safeISODate } from '../utils/security';
 
@@ -436,6 +439,7 @@ const pushReceivablePayment = (receivableId: string, payment: DebtPayment) =>
     method: payment.method,
     note: payment.note,
     paidAt: payment.paidAt,
+    source: payment.source,
   });
 const pushShift = (shift: Shift) =>
   void enqueue('shift', 'upsert', shift as unknown as Record<string, unknown>);
@@ -447,6 +451,7 @@ const pushPayablePayment = (payableId: string, payment: DebtPayment) =>
     method: payment.method,
     note: payment.note,
     paidAt: payment.paidAt,
+    source: payment.source,
   });
 
 /** Gabungkan baris dari server tanpa menghapus data lokal yang belum terkirim. */
@@ -494,9 +499,9 @@ function normalizeItems(items?: LineItem[]): LineItem[] | undefined {
       name: String(item.name ?? '').trim().slice(0, 80) || 'Barang',
       qty,
       price,
-      cost: item.cost === undefined ? undefined : Math.max(0, Math.round(item.cost)),
+      cost: item.cost === undefined ? undefined : normalizeAmount(item.cost, { min: 0 }) ?? 0,
       discount:
-        item.discount === undefined ? undefined : Math.max(0, Math.round(item.discount)),
+        item.discount === undefined ? undefined : Math.min(qty * price, normalizeAmount(item.discount, { min: 0 }) ?? 0),
     });
   }
   return cleaned.length > 0 ? cleaned : undefined;
@@ -508,6 +513,7 @@ export const useAppStore = create<AppState>()(
       ...emptyData(),
 
       updateProfile: (patch) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const next: StoreProfile = { ...get().profile, ...patch };
         const timeOk = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value.trim());
         if (!timeOk(next.openTime) || !timeOk(next.closeTime)) {
@@ -525,6 +531,7 @@ export const useAppStore = create<AppState>()(
       },
 
       updateSettings: (patch) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         if (patch.reminderTemplate !== undefined && !patch.reminderTemplate.trim()) {
           return fail('Template pesan tidak boleh kosong.');
         }
@@ -533,6 +540,8 @@ export const useAppStore = create<AppState>()(
       },
 
       addTransaction: (input) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
+        if (input.type === 'expense' && !canWrite('product.manage')) return fail('Hanya pemilik atau admin yang boleh mencatat pengeluaran.');
         const state = get();
         const amount = normalizeAmount(input.amount);
         if (amount === null) {
@@ -547,6 +556,21 @@ export const useAppStore = create<AppState>()(
         }
         if (!state.categories.some((c) => c.id === input.categoryId)) {
           return fail('Kategori tidak ditemukan. Pilih kategori lain.');
+        }
+
+        const items = normalizeItems(input.items);
+        if (input.items?.length && items?.length !== input.items.length) return fail('Rincian barang tidak valid.');
+        if (input.type === 'sale') {
+          const requested = new Map<string, number>();
+          for (const line of items ?? []) {
+            if (!line.productId) continue;
+            requested.set(line.productId, (requested.get(line.productId) ?? 0) + line.qty);
+          }
+          for (const [id, qty] of requested) {
+            const product = state.products.find((p) => p.id === id);
+            if (!product) return fail('Barang tidak ditemukan. Periksa kembali keranjang.');
+            if (qty > stockFor(product, input.outletId ?? outletOf(state))) return fail(`Stok ${product.name} tidak cukup.`);
+          }
         }
 
         let picked = input.customerId
@@ -579,7 +603,6 @@ export const useAppStore = create<AppState>()(
         }
 
         const createdAt = safeISODate(input.createdAt);
-        const items = normalizeItems(input.items);
 
         // Diskon & pajak dihitung ulang di sini supaya angka yang disimpan lokal
         // sama persis dengan yang nanti dihitung server.
@@ -686,6 +709,7 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteTransaction: (id) => {
+        if (!canWrite('tx.void')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const tx = state.transactions.find((t) => t.id === id);
         if (!tx) return fail('Transaksi tidak ditemukan.');
@@ -733,6 +757,7 @@ export const useAppStore = create<AppState>()(
       },
 
       addReceivable: (input) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const picked = input.customerId
           ? state.customers.find((customer) => customer.id === input.customerId)
@@ -760,6 +785,8 @@ export const useAppStore = create<AppState>()(
       },
 
       payReceivable: (id, amount, method = 'cash', note) => {
+        if (method === 'kasbon') return fail('Pilih tunai, QRIS, atau transfer untuk pembayaran.');
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const receivable = get().receivables.find((r) => r.id === id);
         if (!receivable) return fail('Kasbon tidak ditemukan.');
         const remaining = receivable.amount - paidOf(receivable.payments);
@@ -779,6 +806,7 @@ export const useAppStore = create<AppState>()(
       },
 
       markReminded: (id, at) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const receivable = get().receivables.find((row) => row.id === id);
         if (!receivable) return fail('Kasbon tidak ditemukan.');
         const stamp = at ?? new Date().toISOString();
@@ -795,6 +823,7 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteReceivable: (id) => {
+        if (!canWrite('tx.void')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const receivable = get().receivables.find((r) => r.id === id);
         if (!receivable) return fail('Kasbon tidak ditemukan.');
         if (paidOf(receivable.payments) > 0) {
@@ -824,6 +853,7 @@ export const useAppStore = create<AppState>()(
       },
 
       addPayable: (input) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const name = input.supplierName?.trim().slice(0, 60) ?? '';
         if (!name) return fail('Nama supplier wajib diisi.');
         const amount = normalizeAmount(input.amount);
@@ -845,6 +875,8 @@ export const useAppStore = create<AppState>()(
       },
 
       payPayable: (id, amount, method = 'cash', note) => {
+        if (method === 'kasbon') return fail('Pilih tunai, QRIS, atau transfer untuk pembayaran.');
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const payable = get().payables.find((p) => p.id === id);
         if (!payable) return fail('Utang tidak ditemukan.');
         const remaining = payable.amount - paidOf(payable.payments);
@@ -864,6 +896,7 @@ export const useAppStore = create<AppState>()(
       },
 
       deletePayable: (id) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const payable = get().payables.find((p) => p.id === id);
         if (!payable) return fail('Utang tidak ditemukan.');
         if (paidOf(payable.payments) > 0) {
@@ -875,6 +908,7 @@ export const useAppStore = create<AppState>()(
       },
 
       upsertProduct: (product) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const name = product.name?.trim().slice(0, 60) ?? '';
         if (!name) return fail('Nama barang wajib diisi.');
         const sellPrice = normalizeAmount(product.sellPrice, { min: 0 });
@@ -952,6 +986,7 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteProduct: (id) => {
+        if (!canWrite('product.delete')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         if (!get().products.some((p) => p.id === id)) return fail('Barang tidak ditemukan.');
         set((s) => ({ products: s.products.filter((p) => p.id !== id) }));
         void enqueue('product', 'delete', { id });
@@ -959,6 +994,7 @@ export const useAppStore = create<AppState>()(
       },
 
       adjustStock: (id, delta) => {
+        if (!canWrite('stock.adjust')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         if (!Number.isFinite(delta) || Math.abs(delta) > 100_000) {
           return fail('Perubahan stok tidak valid.');
         }
@@ -983,6 +1019,7 @@ export const useAppStore = create<AppState>()(
       },
 
       addCategory: (category) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const label = category.label?.trim().slice(0, 40) ?? '';
         if (!label) return fail('Nama kategori wajib diisi.');
         const duplicate = get().categories.some(
@@ -997,6 +1034,7 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteCategory: (id) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const category = state.categories.find((c) => c.id === id);
         if (!category) return fail('Kategori tidak ditemukan.');
@@ -1010,25 +1048,22 @@ export const useAppStore = create<AppState>()(
       },
 
       moveCapital: (amount) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         if (!Number.isFinite(amount) || Math.round(amount) === 0) {
           return fail('Nominal pemindahan tidak valid.');
         }
         const value = Math.round(amount);
-        const saved = state.allocations.reduce((sum, a) => sum + a.amount, 0);
-        let balance = 0;
-        for (const tx of state.transactions) {
-          if (tx.method !== 'kasbon') balance += tx.type === 'sale' ? tx.amount : -tx.amount;
-        }
-        balance += state.receivables.reduce((sum, r) => sum + paidOf(r.payments), 0);
-        balance -= state.payables.reduce((sum, p) => sum + debtPaidCash(p), 0);
-        balance -= saved;
+        const scoped = scopeData(state);
+        const saved = scoped.allocations.reduce((sum, a) => sum + a.amount, 0);
+        const balance = cashBalance(scoped);
 
         if (value > 0 && value > balance) return fail('Kas harian tidak cukup untuk dipindahkan.');
         if (value < 0 && Math.abs(value) > saved) return fail('Tabungan modal tidak mencukupi.');
 
         const allocation: CapitalAllocation = {
           id: uid('alc'),
+          outletId: outletOf(state) ?? undefined,
           amount: value,
           createdAt: new Date().toISOString(),
           note: value > 0 ? 'Pemisahan kas ke tabungan modal' : 'Pengambilan dari tabungan modal',
@@ -1039,23 +1074,16 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteAllocation: (id) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const allocation = state.allocations.find((a) => a.id === id);
         if (!allocation) return fail('Catatan pemindahan tidak ditemukan.');
 
-        // Menghapus pemindahan = membalik arahnya, jadi saldo kas harus cukup.
-        if (allocation.amount > 0) {
-          let balance = 0;
-          for (const tx of state.transactions) {
-            if (tx.method !== 'kasbon') balance += tx.type === 'sale' ? tx.amount : -tx.amount;
-          }
-          balance += state.receivables.reduce((sum, r) => sum + paidOf(r.payments), 0);
-          balance -= state.payables.reduce((sum, p) => sum + debtPaidCash(p), 0);
-          balance -= state.allocations.reduce((sum, a) => sum + a.amount, 0);
-          if (allocation.amount > balance + allocation.amount) {
-            return fail('Kas tidak cukup untuk membatalkan pemindahan ini.');
-          }
-        }
+        const scoped = scopeData({ ...state, activeOutletId: allocation.outletId ?? state.outlets[0]?.id });
+        const balance = cashBalance(scoped);
+        const saved = scoped.allocations.reduce((sum, a) => sum + a.amount, 0);
+        if (allocation.amount < 0 && balance < -allocation.amount) return fail('Kas tidak cukup untuk membatalkan penarikan ini.');
+        if (allocation.amount > 0 && saved < allocation.amount) return fail('Tabungan modal tidak cukup untuk dibatalkan.');
 
         set((s) => ({ allocations: s.allocations.filter((a) => a.id !== id) }));
         void enqueue('allocation', 'delete', { id });
@@ -1063,6 +1091,7 @@ export const useAppStore = create<AppState>()(
       },
 
       openShift: (openingCash) => {
+        if (!canWrite('shift.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const outletId = outletOf(state);
         if (state.shifts.some((shift) => !shift.closedAt && (shift.outletId ?? outletId) === outletId)) {
@@ -1083,6 +1112,7 @@ export const useAppStore = create<AppState>()(
       },
 
       closeShift: (closingCash, note) => {
+        if (!canWrite('shift.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const shift = state.shifts.find(
           (item) => !item.closedAt && (item.outletId ?? outletOf(state)) === outletOf(state),
@@ -1093,18 +1123,7 @@ export const useAppStore = create<AppState>()(
 
         // Kas seharusnya dihitung sama seperti di layar Shift (hanya tunai) dan
         // hanya dari cabang shift ini — kas cabang lain tidak boleh ikut.
-        const shiftOutlet = shift.outletId ?? outletOf(state);
-        const since = new Date(shift.openedAt).getTime();
-        let cashIn = 0;
-        let cashOut = 0;
-        for (const tx of state.transactions) {
-          if (tx.method !== 'cash') continue;
-          if ((tx.outletId ?? shiftOutlet) !== shiftOutlet) continue;
-          if (new Date(tx.createdAt).getTime() < since) continue;
-          if (tx.type === 'sale') cashIn += tx.amount;
-          else cashOut += tx.amount;
-        }
-        const expected = shift.openingCash + cashIn - cashOut;
+        const expected = shiftCash(scopeData(state), shift).expected;
 
         const closed: Shift = {
           ...shift,
@@ -1121,23 +1140,27 @@ export const useAppStore = create<AppState>()(
 
       mergeRemote: (patch) => {
         set((s) => ({
-          products: mergeList(s.products, patch.products),
-          transactions: mergeList(s.transactions, patch.transactions),
-          receivables: mergeList(s.receivables, patch.receivables),
-          payables: mergeList(s.payables, patch.payables),
-          categories: mergeList(s.categories, patch.categories),
-          allocations: mergeList(s.allocations, patch.allocations),
+          products: mergeList(s.products, patch.products).filter((row) => !patch.deleted?.products?.includes(row.id)),
+          transactions: mergeList(s.transactions, patch.transactions).filter((row) => !patch.deleted?.transactions?.includes(row.id)),
+          receivables: mergeList(s.receivables, patch.receivables).filter((row) => !patch.deleted?.receivables?.includes(row.id)),
+          payables: mergeList(s.payables, patch.payables).filter((row) => !patch.deleted?.payables?.includes(row.id)),
+          categories: mergeList(s.categories, patch.categories).filter((row) => !patch.deleted?.categories?.includes(row.id)),
+          allocations: mergeList(s.allocations, patch.allocations).filter((row) => !patch.deleted?.allocations?.includes(row.id)),
           shifts: mergeList(s.shifts, patch.shifts),
-          orders: mergeList(s.orders, patch.orders),
+          orders: mergeList(s.orders, patch.orders).filter((row) => !patch.deleted?.orders?.includes(row.id)),
           customers: mergeList(s.customers, patch.customers),
           outlets: mergeList(s.outlets, patch.outlets),
           opnames: mergeList(s.opnames, patch.opnames),
+          purchases: mergeList(s.purchases, patch.purchases),
+          suppliers: mergeList(s.suppliers, patch.suppliers),
+          purchaseReturns: mergeList(s.purchaseReturns, patch.purchaseReturns),
           activeOutletId: patch.activeOutletId ?? s.activeOutletId,
           profile: patch.profile ? { ...s.profile, ...patch.profile } : s.profile,
         }));
       },
 
       exportBackupText: () => {
+        if (!canWrite('settings.manage')) throw new Error('Hanya pemilik atau admin yang boleh membuat cadangan lengkap.');
         const s = get();
         return JSON.stringify(
           buildBackup({
@@ -1164,6 +1187,7 @@ export const useAppStore = create<AppState>()(
       },
 
       importBackupText: (text, mode) => {
+        if (!canWrite('settings.manage')) return { ok: false, reason: 'Hanya pemilik atau admin yang boleh memulihkan cadangan.' };
         const parsed = parseBackup(text);
         if (!parsed.ok) return { ok: false, reason: parsed.reason };
 
@@ -1219,6 +1243,7 @@ export const useAppStore = create<AppState>()(
       },
 
       addOrder: (input) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const picked = input.customerId
           ? get().customers.find((customer) => customer.id === input.customerId)
           : matchCustomer(get().customers, input.customerName);
@@ -1262,6 +1287,7 @@ export const useAppStore = create<AppState>()(
       },
 
       updateOrder: (id, patch) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const order = state.orders.find((o) => o.id === id);
         if (!order) return fail('Pesanan tidak ditemukan.');
@@ -1303,6 +1329,7 @@ export const useAppStore = create<AppState>()(
       },
 
       cancelOrder: (id) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const order = get().orders.find((o) => o.id === id);
         if (!order) return fail('Pesanan tidak ditemukan.');
         if (order.status === 'selesai') {
@@ -1317,6 +1344,7 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteOrder: (id) => {
+        if (!canWrite('tx.void')) return fail('Hanya pemilik atau admin yang boleh menghapus pesanan.');
         const order = get().orders.find((o) => o.id === id);
         if (!order) return fail('Pesanan tidak ditemukan.');
         if (order.status === 'selesai') {
@@ -1328,6 +1356,7 @@ export const useAppStore = create<AppState>()(
       },
 
       completeOrder: (id, payment) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const order = state.orders.find((o) => o.id === id);
         if (!order) return fail('Pesanan tidak ditemukan.');
@@ -1384,12 +1413,10 @@ export const useAppStore = create<AppState>()(
           const created = get().transactions.find((tx) => tx.id === result.id);
           const receivableId = created?.receivableId;
           if (receivableId) {
-            const paid = get().payReceivable(receivableId, deposit, payment.method, 'Uang muka pesanan');
-            if (!paid.ok) {
-              // Transaksi sudah tercatat; DP gagal hanya menyisakan sisa yang
-              // lebih besar. Beri tahu pengguna, jangan diam-diam.
-              return paid;
-            }
+            const offset = makePayment(deposit, 'kasbon', 'Uang muka pesanan');
+            set((s) => ({ receivables: s.receivables.map((r) => r.id === receivableId
+              ? { ...r, payments: [...r.payments, offset] } : r) }));
+            pushReceivablePayment(receivableId, offset);
           }
         }
 
@@ -1405,6 +1432,7 @@ export const useAppStore = create<AppState>()(
       },
 
       addCustomer: (input) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const checked = validateCustomer(input);
         if (!checked.ok) return fail(checked.reason);
 
@@ -1429,6 +1457,7 @@ export const useAppStore = create<AppState>()(
       },
 
       updateCustomer: (id, patch) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const existing = state.customers.find((customer) => customer.id === id);
         if (!existing) return fail('Pelanggan tidak ditemukan.');
@@ -1466,6 +1495,7 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteCustomer: (id) => {
+        if (!canWrite('kasbon.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const customer = state.customers.find((item) => item.id === id);
         if (!customer) return fail('Pelanggan tidak ditemukan.');
@@ -1520,6 +1550,7 @@ export const useAppStore = create<AppState>()(
       },
 
       addOutlet: (input) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const checked = validateOutlet(input, state.outlets);
         if (!checked.ok) return fail(checked.reason);
@@ -1543,6 +1574,7 @@ export const useAppStore = create<AppState>()(
       },
 
       updateOutlet: (id, patch) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const existing = state.outlets.find((outlet) => outlet.id === id);
         if (!existing) return fail('Cabang tidak ditemukan.');
@@ -1570,6 +1602,7 @@ export const useAppStore = create<AppState>()(
       },
 
       archiveOutlet: (id) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const outlet = state.outlets.find((item) => item.id === id);
         if (!outlet) return fail('Cabang tidak ditemukan.');
@@ -1596,6 +1629,7 @@ export const useAppStore = create<AppState>()(
       },
 
       switchOutlet: (id) => {
+        if (!canWrite('settings.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const outlet = state.outlets.find((item) => item.id === id);
         if (!outlet) return fail('Cabang tidak ditemukan.');
@@ -1605,6 +1639,7 @@ export const useAppStore = create<AppState>()(
       },
 
       commitOpname: (input) => {
+        if (!canWrite('stock.adjust')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const outletId = outletOf(state);
         const lines = buildOpnameLines(state.products, outletId, input.counts, input.note);
@@ -1660,6 +1695,7 @@ export const useAppStore = create<AppState>()(
       },
 
       commitPurchase: (input) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const outletId = outletOf(state);
         const items = buildPurchaseItems(state.products, outletId, input.entries);
@@ -1804,6 +1840,7 @@ export const useAppStore = create<AppState>()(
       },
 
       addSupplier: (input) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const checked = validateSupplier(input, state.suppliers);
         if (!checked.ok) return fail(checked.reason);
@@ -1817,6 +1854,7 @@ export const useAppStore = create<AppState>()(
       },
 
       updateSupplier: (id, patch) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const existing = state.suppliers.find((supplier) => supplier.id === id);
         if (!existing) return fail('Supplier tidak ditemukan.');
@@ -1870,6 +1908,7 @@ export const useAppStore = create<AppState>()(
       },
 
       archiveSupplier: (id) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const supplier = state.suppliers.find((row) => row.id === id);
         if (!supplier) return fail('Supplier tidak ditemukan.');
@@ -1891,6 +1930,7 @@ export const useAppStore = create<AppState>()(
       },
 
       commitReturn: (input) => {
+        if (!canWrite('product.manage')) return fail('Peran Anda tidak diizinkan melakukan perubahan ini.');
         const state = get();
         const outletId = outletOf(state);
         const supplierName = cleanSupplierName(input.supplierName);

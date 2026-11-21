@@ -1,3 +1,4 @@
+import { friendlyAuthError, friendlySyncError } from '../src/services/sync/errors';
 /**
  * Layar Akun & Sinkron.
  *
@@ -27,7 +28,7 @@ export default function AkunScreen() {
   const insets = useSafeAreaInsets();
 
   const { email, role, outletId, outletName, userId, signOut, refreshMembership } = useAuthStore();
-  const { status, pending, lastSyncAt, error, online } = useSyncStore();
+  const { status, pending, lastSyncAt, error, online, warning, droppedCount } = useSyncStore();
 
   const [busy, setBusy] = useState(false);
   const [storeName, setStoreName] = useState('');
@@ -57,7 +58,7 @@ export default function AkunScreen() {
     });
     setBusy(false);
     if (rpcError) {
-      setFormError(rpcError.message);
+      setFormError(friendlySyncError(rpcError));
       return;
     }
     await refreshMembership();
@@ -65,8 +66,12 @@ export default function AkunScreen() {
   };
 
   const leave = async () => {
-    await signOut();
-    router.replace('/masuk');
+    try {
+      await signOut();
+      router.replace('/masuk');
+    } catch {
+      setFormError('Keluar belum selesai. Coba lagi agar data di perangkat dibersihkan.');
+    }
   };
 
   return (
@@ -181,6 +186,8 @@ export default function AkunScreen() {
                         ? 'Berjalan'
                         : status === 'error'
                           ? 'Gagal'
+                          : droppedCount > 0
+                            ? 'Perlu diperiksa'
                           : pending > 0
                             ? `${pending} menunggu`
                             : 'Tersinkron'
@@ -209,6 +216,7 @@ export default function AkunScreen() {
                 }
               />
               {error ? <Text style={styles.error}>{error}</Text> : null}
+              {droppedCount > 0 ? <Text style={styles.error}>{droppedCount} perubahan ditolak. {warning} Periksa catatan lalu simpan ulang setelah penyebabnya diperbaiki.</Text> : null}
               <Button
                 label={busy ? 'Menyinkronkan…' : 'Sinkron sekarang'}
                 icon="refresh"

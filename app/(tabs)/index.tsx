@@ -1,3 +1,4 @@
+import { useCan, useCanSeeProfit } from '../../src/utils/usePermissions';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
@@ -54,6 +55,8 @@ const TIPS = [
 
 export default function BerandaScreen() {
   const router = useRouter();
+  const showProfit = useCanSeeProfit();
+  const mayVoid = useCan('tx.void');
   const data = useScopedData();
   const settings = useAppStore((s) => s.settings);
   const profile = useAppStore((s) => s.profile);
@@ -287,7 +290,7 @@ export default function BerandaScreen() {
             <SummaryTile
               icon="trendUp"
               label="Laba tunai"
-              value={formatRupiah(today.profit)}
+              value={showProfit ? formatRupiah(today.profit) : '—'}
               hint={today.income > 0 ? 'Masuk − keluar' : 'Belum ada omzet'}
               tone={today.profit >= 0 ? colors.secondary : colors.danger}
             />

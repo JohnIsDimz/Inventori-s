@@ -1,3 +1,4 @@
+import { appAlert } from '../src/utils/alert';
 /**
  * Cabang (Sprint 12).
  *
@@ -8,7 +9,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TextField } from '../src/components/Field';
@@ -79,7 +80,7 @@ export default function CabangScreen() {
   };
 
   const confirmArchive = (outlet: Outlet) => {
-    Alert.alert(
+    appAlert.alert(
       'Arsipkan cabang?',
       `"${outlet.name}" tidak akan muncul lagi saat memilih cabang. Riwayat transaksi dan kasbonnya tetap tersimpan.`,
       [
@@ -89,7 +90,7 @@ export default function CabangScreen() {
           style: 'destructive',
           onPress: () => {
             const result = archiveOutlet(outlet.id);
-            if (!result.ok) Alert.alert('Belum bisa diarsipkan', result.reason);
+            if (!result.ok) appAlert.alert('Belum bisa diarsipkan', result.reason);
           },
         },
       ],
@@ -143,7 +144,7 @@ export default function CabangScreen() {
                 row={row}
                 onUse={() => {
                   const result = switchOutlet(row.outlet.id);
-                  if (!result.ok) Alert.alert('Belum bisa dipakai', result.reason);
+                  if (!result.ok) appAlert.alert('Belum bisa dipakai', result.reason);
                   else router.back();
                 }}
                 onEdit={() => openEdit(row.outlet)}

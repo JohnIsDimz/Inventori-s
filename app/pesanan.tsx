@@ -1,3 +1,4 @@
+import { appAlert } from '../src/utils/alert';
 /**
  * Daftar pesanan / kuotasi.
  *
@@ -7,7 +8,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../src/components/Icon';
@@ -70,7 +71,7 @@ export default function PesananScreen() {
       if (yes) onYes();
       return;
     }
-    Alert.alert(title, message, [
+    appAlert.alert(title, message, [
       { text: 'Batal', style: 'cancel' },
       { text: 'Lanjut', style: 'destructive', onPress: onYes },
     ]);
@@ -101,7 +102,7 @@ export default function PesananScreen() {
       tone: 'ok',
       text:
         method === 'kasbon'
-          ? 'Pesanan jadi transaksi kasbon. Cicilan bisa dicatat di menu Kasbon.'
+          ? 'Pesanan jadi transaksi kasbon. Uang muka memotong sisa tagihan saat pesanan diselesaikan; bukan penerimaan tunai baru. Cicilan bisa dicatat di menu Kasbon.'
           : 'Pesanan jadi transaksi. Stok dan omzet sudah diperbarui.',
     });
   };

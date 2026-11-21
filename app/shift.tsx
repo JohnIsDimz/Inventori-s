@@ -1,3 +1,5 @@
+import { appAlert } from '../src/utils/alert';
+import { useCan, useCanSeeProfit } from '../src/utils/usePermissions';
 /**
  * Shift kasir.
  *
@@ -12,7 +14,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TextField } from '../src/components/Field';
@@ -34,7 +36,7 @@ export default function ShiftScreen() {
   const openShift = useAppStore((s) => s.openShift);
   const closeShift = useAppStore((s) => s.closeShift);
   const role = useAuthStore((s) => s.role);
-  const allowed = can(role, 'shift.manage');
+  const allowed = useCan('shift.manage');
 
   const shift = activeShift(data);
 
@@ -89,7 +91,7 @@ export default function ShiftScreen() {
     setError(null);
     setUangFisik('');
     setCatatan('');
-    Alert.alert(
+    appAlert.alert(
       selisih === 0 ? 'Shift ditutup, uang pas' : 'Shift ditutup',
       selisih === 0
         ? 'Uang di laci sama dengan catatan. Kerja bagus.'

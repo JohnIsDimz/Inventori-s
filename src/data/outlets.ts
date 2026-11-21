@@ -305,7 +305,7 @@ export function scopeData(data: ScopeSource): ScopedData {
   }
 
   const mine = <T extends { outletId?: string }>(rows: T[] | undefined): T[] =>
-    (rows ?? []).filter((row) => !row.outletId || row.outletId === outletId);
+    (rows ?? []).filter((row) => (row.outletId ?? outlets[0]?.id) === outletId);
 
   return {
     ...data,
@@ -320,7 +320,7 @@ export function scopeData(data: ScopeSource): ScopedData {
     payables: mine(data.payables),
     orders: mine(data.orders),
     shifts: mine(data.shifts),
-    allocations: data.allocations,
+    allocations: mine(data.allocations),
     customers: data.customers ?? [],
     opnames: mine(data.opnames),
     purchases: mine(data.purchases),

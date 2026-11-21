@@ -1,7 +1,9 @@
+import { useCan, useCanSeeProfit } from '../../src/utils/usePermissions';
+import { appAlert } from '../../src/utils/alert';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, SectionList, StyleSheet, Text, View } from 'react-native';
 
 import { AppHeader } from '../../src/components/AppHeader';
 import { TextField } from '../../src/components/Field';
@@ -36,6 +38,8 @@ type Filter = 'all' | 'sale' | 'expense' | 'kasbon';
 
 export default function TransaksiScreen() {
   const router = useRouter();
+  const showProfit = useCanSeeProfit();
+  const mayVoid = useCan('tx.void');
   const params = useLocalSearchParams<{ focus?: string }>();
   const data = useScopedData();
   const deleteTransaction = useAppStore((s) => s.deleteTransaction);
@@ -93,7 +97,7 @@ export default function TransaksiScreen() {
     : undefined;
 
   const confirmDelete = (tx: Transaction) => {
-    Alert.alert(
+    appAlert.alert(
       'Hapus transaksi?',
       'Transaksi akan dihapus dan saldo dihitung ulang otomatis.',
       [
@@ -104,7 +108,7 @@ export default function TransaksiScreen() {
           onPress: () => {
             const result = deleteTransaction(tx.id);
             if (!result.ok) {
-              Alert.alert('Tidak bisa dihapus', result.reason);
+              appAlert.alert('Tidak bisa dihapus', result.reason);
               return;
             }
             deletePhoto(tx.photoUri);
@@ -118,11 +122,16 @@ export default function TransaksiScreen() {
   return (
     <View style={styles.root}>
       <AppHeader subtitle="Transaksi" />
-      <ScrollView
+      <SectionList
+        sections={groups.map((group) => ({ ...group, data: group.items }))}
+        keyExtractor={(tx) => tx.id}
         contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-      >
+        stickySectionHeadersEnabled={false}
+        initialNumToRender={20}
+        maxToRenderPerBatch={20}
+        windowSize={7}
+        ListHeaderComponent={<View style={{ gap: spacing.md }}>
         <Card padded={false} style={styles.summaryCard}>
           <View style={styles.summaryRow}>
             <View style={styles.summaryTile}>
@@ -148,9 +157,9 @@ export default function TransaksiScreen() {
                 numberOfLines={1}
                 adjustsFontSizeToFit
               >
-                {formatRupiah(summary.profit)}
+                {showProfit ? formatRupiah(summary.profit) : '—'}
               </Text>
-              <Text style={styles.summaryHint}>Margin {summary.margin.toFixed(1)}%</Text>
+              <Text style={styles.summaryHint}>{showProfit ? `Margin ${summary.margin.toFixed(1)}%` : 'Akses terbatas'}</Text>
             </View>
           </View>
         </Card>
@@ -184,7 +193,8 @@ export default function TransaksiScreen() {
           ]}
         />
 
-        {groups.length === 0 ? (
+        </View>}
+        ListEmptyComponent={
           <Card>
             <EmptyState
               icon={data.transactions.length === 0 ? 'receipt' : 'search'}
@@ -211,9 +221,8 @@ export default function TransaksiScreen() {
               }
             />
           </Card>
-        ) : (
-          groups.map((group) => (
-            <View key={group.key} style={{ gap: spacing.sm }}>
+        }
+        renderSectionHeader={({ section: group }) => (
               <View style={styles.groupHeader}>
                 <Text style={styles.groupLabel}>{group.label}</Text>
                 <View style={styles.groupTotals}>
@@ -229,20 +238,11 @@ export default function TransaksiScreen() {
                   ) : null}
                 </View>
               </View>
-              <Card padded={false}>
-                {group.items.map((tx, index) => (
-                  <TransactionRow
-                    key={tx.id}
-                    tx={tx}
-                    last={index === group.items.length - 1}
-                    onPress={() => setSelectedId(tx.id)}
-                  />
-                ))}
-              </Card>
-            </View>
-          ))
         )}
-      </ScrollView>
+        renderItem={({ item: tx, index, section }) => (
+          <TransactionRow tx={tx} last={index === section.data.length - 1} onPress={() => setSelectedId(tx.id)} />
+        )}
+      />
 
       <Sheet
         visible={selected !== null}
@@ -358,7 +358,7 @@ export default function TransaksiScreen() {
               />
             ) : null}
 
-            <Button label="Hapus transaksi" icon="trash" variant="danger" onPress={() => confirmDelete(selected)} />
+            {mayVoid ? <Button label="Hapus transaksi" icon="trash" variant="danger" onPress={() => confirmDelete(selected)} /> : null}
           </View>
         ) : null}
       </Sheet>

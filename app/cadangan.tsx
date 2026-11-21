@@ -1,3 +1,4 @@
+import { appAlert } from '../src/utils/alert';
 /**
  * Cadangan lokal — ekspor & impor seluruh data tanpa cloud.
  *
@@ -65,7 +66,7 @@ export default function CadanganScreen() {
     [data],
   );
 
-  const rawJson = useMemo(() => (showRaw ? exportBackupText() : ''), [showRaw, exportBackupText]);
+  const rawJson = useMemo(() => (showRaw ? exportBackupText() : ''), [showRaw, exportBackupText, data]);
 
   const reminder = useMemo(
     () =>
@@ -130,12 +131,12 @@ export default function CadanganScreen() {
         dialogTitle: 'Simpan / bagikan cadangan',
         UTI: 'public.json',
       });
-      markBackupDone();
-      setStatus({ tone: 'ok', text: `Berkas cadangan dibuat (${name}).` });
+      // Dialog berbagi tidak membuktikan berkas benar-benar disimpan.
+      setStatus({ tone: 'ok', text: `Berkas cadangan dibuat (${name}). Pastikan sudah disimpan di tujuan pilihan Anda.` });
     } catch (error) {
       setStatus({
         tone: 'error',
-        text: error instanceof Error ? error.message : 'Gagal membuat berkas cadangan.',
+        text: 'Berkas cadangan belum bisa dibuat. Periksa ruang penyimpanan lalu coba lagi.',
       });
     } finally {
       setBusy(false);
@@ -146,7 +147,7 @@ export default function CadanganScreen() {
     setBusy(true);
     setStatus(null);
     try {
-      const csv = buildTransactionsCsv(data, new Date(0), new Date());
+      const csv = buildTransactionsCsv(data, new Date(0), new Date(), true);
       const csvName = `transaksi-inventoris-${Date.now()}.csv`;
       if (Platform.OS === 'web') {
         const ok = downloadOnWeb(csv, csvName, 'text/csv;charset=utf-8');
@@ -171,7 +172,7 @@ export default function CadanganScreen() {
     } catch (error) {
       setStatus({
         tone: 'error',
-        text: error instanceof Error ? error.message : 'Gagal mengekspor CSV.',
+        text: 'Ekspor belum berhasil. Periksa ruang penyimpanan lalu coba lagi.',
       });
     } finally {
       setBusy(false);
@@ -223,7 +224,7 @@ export default function CadanganScreen() {
       return;
     }
 
-    Alert.alert(
+    appAlert.alert(
       mode === 'replace'
         ? 'Ganti semua data?'
         : mode === 'latest'
@@ -260,6 +261,11 @@ export default function CadanganScreen() {
       }
       const asset = picked.assets[0];
       const file = new File(asset.uri);
+      if ((asset.size ?? file.size ?? 0) > 10 * 1024 * 1024) {
+        setStatus({ tone: 'error', text: 'Berkas terlalu besar. Batasnya 10 MB.' });
+        setBusy(false);
+        return;
+      }
       const text = await file.text();
       setBusy(false);
       confirmRestore(text, asset.name ?? 'berkas');
@@ -267,7 +273,7 @@ export default function CadanganScreen() {
       setBusy(false);
       setStatus({
         tone: 'error',
-        text: error instanceof Error ? error.message : 'Berkas tidak bisa dibaca.',
+        text: 'Berkas tidak bisa dibaca. Pilih ulang berkas cadangan yang tersimpan di perangkat.',
       });
     }
   };
@@ -310,7 +316,9 @@ export default function CadanganScreen() {
           ) : (
             <Text style={styles.hint}>
               Cadangan memuat semua data di atas beserta pengaturan toko. Berkasnya dibuat di HP
-              ini dan tidak dikirim ke mana pun.
+              ini dan dibagikan hanya saat Anda memilih tujuan berbagi.
+              Berkas tidak dilindungi kata sandi: isinya termasuk nomor pelanggan, harga modal, dan riwayat transaksi.
+              Simpan di tempat pribadi; foto nota tidak disertakan dalam cadangan.
             </Text>
           )}
         </Card>

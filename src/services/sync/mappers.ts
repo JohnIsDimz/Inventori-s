@@ -137,7 +137,8 @@ export interface TransactionPushInput {
   transaction: Transaction;
   outletId: string;
   remoteId: string;
-  items: { product_id: string | null; name: string; qty: number; price: number; cost: number }[];
+  items: { product_id: string | null; name: string; qty: number; price: number; cost: number; discount?: number }[];
+  categoryId?: string | null;
   shiftId?: string | null;
   customerId?: string | null;
 }
@@ -149,7 +150,7 @@ export function transactionToRemote(input: TransactionPushInput): RemoteRow {
     client_tx_id: remoteId,
     shift_id: input.shiftId ?? null,
     type: transaction.type,
-    category_id: null,
+    category_id: input.categoryId ?? null,
     customer_id: input.customerId ?? null,
     discount: transaction.discount ?? 0,
     discount_kind: transaction.discountKind ?? 'amount',
@@ -236,13 +237,14 @@ export function transactionFromRemote(
   row: RemoteRow,
   id: string,
   items: LineItem[],
+  localCategoryId?: string,
 ): Transaction {
   const type = str(row.type, 'sale') === 'expense' ? ('expense' as TxType) : ('sale' as TxType);
   return {
     id,
     type,
     amount: num(row.total),
-    categoryId: str(row.category_id, ''),
+    categoryId: localCategoryId ?? str(row.category_id, ''),
     method: asMethod(row.method),
     note: str(row.note, '') || undefined,
     createdAt: iso(row.created_at, new Date().toISOString()),

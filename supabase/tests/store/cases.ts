@@ -15,6 +15,8 @@
  *   - menghapus kasbon mengembalikan stok ke cabang transaksinya;
  *   - saldo kas selalu sama dengan (uang masuk − uang keluar − tabungan).
  */
+import { setAccessSession } from '../../../src/data/access';
+import { shiftCash } from '../../../src/data/selectors';
 import { useAppStore, computeTotals } from '../../../src/data/store';
 import { cashBalance, summarize, lowStock, receivableSummary, dueOrders } from '../../../src/data/selectors';
 import { scopeData } from '../../../src/data/outlets';
@@ -77,13 +79,15 @@ check('jual 2 Indomie: stok turun, kas naik, laba benar', () => {
 check('stok tidak boleh minus saat jual melebihi stok', () => {
   reset(); seed();
   const before = stock('Teh');
-  s().addTransaction({
+  const result = s().addTransaction({
     type: 'sale', amount: 40000, categoryId: cat('sale'), method: 'cash',
     items: [{ productId: pid('Teh'), name: 'Teh', qty: 10, price: 4000, cost: 2000 }],
   });
   const after = stock('Teh');
   console.log(`    stok Teh: ${before} → ${after}`);
-  if (after < 0) console.log('    ⚠ stok bisa minus lewat transaksi (tidak dicegah di store)');
+  eq(result.ok, false, 'kelebihan stok ditolak');
+  eq(after, before, 'stok tidak berubah');
+  eq(s().transactions.length, 0, 'tidak mencatat penjualan yang gagal');
 });
 
 console.log('\n== 2. kasbon ==');
@@ -270,6 +274,7 @@ check('hapus kasbon mengembalikan stok ke cabang yang benar', () => {
   const a = s().outlets[0].id;
   const b = ok(s().addOutlet({ name: 'Cabang 2' }), 'cabang 2').id!;
   s().switchOutlet(b);
+  ok(s().adjustStock(pid('Indomie'), 2), 'siapkan stok cabang B');
   s().addTransaction({ type: 'sale', amount: 10000, categoryId: cat('sale'), method: 'kasbon', customerName: 'Bu A', items: [{ productId: pid('Indomie'), name: 'Indomie', qty: 2, price: 5000, cost: 3000 }] });
   const stockB = scopeData(s()).products.find((p) => p.name === 'Indomie')!.stock;
   const rcvId = s().receivables[0].id;
@@ -593,6 +598,7 @@ check('hapus kasbon mengembalikan stok ke cabang transaksinya', () => {
   const a = s().outlets[0].id;
   const b = ok(s().addOutlet({ name: 'Cabang 2' })).id!;
   s().switchOutlet(b);
+  ok(s().adjustStock(pid('Indomie'), 2), 'siapkan stok cabang B');
   s().addTransaction({ type: 'sale', amount: 10000, categoryId: cat('sale'), method: 'kasbon', customerName: 'Bu A', items: [{ productId: pid(), name: 'Indomie', qty: 2, price: 5000, cost: 3000 }] });
   ok(s().deleteReceivable(s().receivables[0].id), 'hapus kasbon');
   const scoped = scopeData(s()).products.find((p) => p.name === 'Indomie')!;
@@ -682,6 +688,65 @@ check('tanpa izin simpan, nama tidak menambah buku pelanggan', () => {
 check('kasbon tanpa nama tetap ditolak', () => {
   reset(); seed();
   eq(s().addTransaction({ type: 'sale', amount: 5000, categoryId: cat('sale'), method: 'kasbon', customerName: '   ', saveCustomer: true }).ok, false, 'harus ditolak');
+});
+
+console.log('\n== regresi audit keamanan dan kas ==');
+check('pembayaran manual tidak boleh memakai metode kasbon', () => {
+  reset(); seed();
+  ok(s().addReceivable({ customerName: 'Bu Sri', amount: 10000, dueDate: new Date().toISOString() }));
+  eq(s().payReceivable(s().receivables[0].id, 1000, 'kasbon').ok, false);
+  ok(s().addPayable({ supplierName: 'Agen', amount: 10000, dueDate: new Date().toISOString() }));
+  eq(s().payPayable(s().payables[0].id, 1000, 'kasbon').ok, false);
+});
+check('shift menghitung cicilan tunai, bukan QRIS atau kredit retur', () => {
+  reset(); seed();
+  ok(s().openShift(10000));
+  ok(s().addReceivable({ customerName: 'Bu Sri', amount: 10000, dueDate: new Date().toISOString() }));
+  ok(s().payReceivable(s().receivables[0].id, 3000, 'cash'));
+  ok(s().payReceivable(s().receivables[0].id, 1000, 'qris'));
+  ok(s().addPayable({ supplierName: 'Agen', amount: 10000, dueDate: new Date().toISOString() }));
+  ok(s().payPayable(s().payables[0].id, 2000, 'cash'));
+  const payable = s().payables[0];
+  useAppStore.setState({ payables: [{ ...payable, payments: [...payable.payments, { id: 'ret', amount: 1000, method: 'cash', source: 'retur', paidAt: new Date().toISOString() }] }] });
+  eq(shiftCash(scopeData(s()), s().shifts[0]).expected, 11000);
+  ok(s().closeShift(11000));
+  eq(s().shifts[0].expectedCash, 11000); eq(s().shifts[0].difference, 0);
+});
+check('jumlah barang duplikat digabung saat memeriksa stok', () => {
+  reset(); seed();
+  const line = { productId: pid(), name: 'Indomie', qty: 6, price: 5000 };
+  const before = stock();
+  eq(s().addTransaction({ type: 'sale', amount: 60000, categoryId: cat('sale'), method: 'cash', items: [line, line] }).ok, false);
+  eq(stock(), before); eq(s().transactions.length, 0);
+});
+check('penghapusan jarak jauh benar-benar menghilangkan data lokal', () => {
+  reset(); seed();
+  const id = pid();
+  s().mergeRemote({ deleted: { products: [id] } });
+  eq(s().products.some((p) => p.id === id), false);
+});
+check('modal cabang pertama tidak bisa dipakai cabang kedua', () => {
+  reset(); seed();
+  ok(s().addTransaction({ type: 'sale', amount: 10000, categoryId: cat('sale'), method: 'cash' }));
+  ok(s().moveCapital(5000));
+  const b = ok(s().addOutlet({ name: 'Cabang Dua' })).id!;
+  ok(s().switchOutlet(b));
+  eq(scopeData(s()).allocations.length, 0);
+  eq(s().moveCapital(-1000).ok, false);
+  eq(s().moveCapital(1000).ok, false);
+});
+check('store menolak mutasi terlarang walau dipanggil tanpa tombol UI', () => {
+  reset(); seed();
+  setAccessSession({ userId: 'u', outletId: 'o', role: 'kasir' }, true);
+  try {
+    eq(s().adjustStock(pid(), 1).ok, false);
+    eq(s().deleteProduct(pid()).ok, false);
+    eq(s().addOutlet({ name: 'Cabang Lain' }).ok, false);
+    eq(s().updateProfile({ name: 'Ubah' }).ok, false);
+    eq(s().addTransaction({ type: 'expense', amount: 1000, categoryId: cat('expense'), method: 'cash' }).ok, false);
+    setAccessSession({ userId: 'u', outletId: null, role: null }, true);
+    eq(s().openShift(0).ok, false);
+  } finally { setAccessSession({ userId: null, outletId: null, role: null }, false); }
 });
 
 console.log(`\nSELESAI: ${pass} pemeriksaan lulus${fails.length ? `, ${fails.length} GAGAL` : ''}`);

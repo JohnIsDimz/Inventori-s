@@ -33,13 +33,17 @@ const center = (text: string) =>
 const line = (char = '-') => char.repeat(WIDTH);
 
 const twoCols = (left: string, right: string) => {
-  const rightText = right.slice(0, WIDTH - 2);
+  left = sanitizePrintText(left).replace(/\n/g, ' ').slice(0, WIDTH - 4);
+  const rightText = sanitizePrintText(right).replace(/\n/g, ' ').slice(0, WIDTH - 2);
   const space = Math.max(1, WIDTH - left.length - rightText.length);
   return `${left}${' '.repeat(space)}${rightText}`;
 };
 
 export interface ReceiptInput {
   storeName: string;
+  type?: 'sale' | 'expense';
+  paid?: number;
+  change?: number;
   /** Nama cabang; hanya dicetak bila toko punya lebih dari satu cabang. */
   outletName?: string;
   storeCode?: string;
@@ -86,9 +90,10 @@ export function buildReceiptText(input: ReceiptInput): string {
       rows.push(
         twoCols(
           `  ${item.qty} x ${formatRupiah(item.price, { space: false })}`,
-          formatRupiah(item.qty * item.price, { space: false }),
+          formatRupiah(Math.max(0, item.qty * item.price - (item.discount ?? 0)), { space: false }),
         ),
       );
+      if ((item.discount ?? 0) > 0) rows.push(twoCols('  Diskon barang', `-${formatRupiah(item.discount ?? 0, { space: false })}`));
     }
     rows.push(line());
   }
@@ -109,13 +114,14 @@ export function buildReceiptText(input: ReceiptInput): string {
   }
 
   rows.push(twoCols('TOTAL', formatRupiah(input.total, { space: false })));
-  rows.push(twoCols(`Bayar (${METHOD_LABEL[input.method]})`, formatRupiah(input.total, { space: false })));
+  rows.push(twoCols(input.method === 'kasbon' ? 'Belum dibayar (kasbon)' : input.type === 'expense' ? 'Uang keluar' : `Bayar (${METHOD_LABEL[input.method]})`, formatRupiah(input.paid ?? input.total, { space: false })));
+  if (input.method === 'cash' && (input.change ?? 0) > 0) rows.push(twoCols('Kembalian', formatRupiah(input.change ?? 0, { space: false })));
   if (input.note?.trim()) {
     rows.push(line());
     rows.push(sanitizePrintText(`Catatan: ${input.note.trim()}`).slice(0, WIDTH * 2));
   }
   rows.push(line());
-  rows.push(center(input.footer?.trim() || 'Terima kasih sudah berbelanja'));
+  rows.push(center(input.footer?.trim() || (input.type === 'expense' ? 'Bukti pengeluaran' : 'Terima kasih sudah berbelanja')));
   rows.push(center('Barang yang sudah dibeli tidak dapat ditukar atau dikembalikan'));
 
   return rows.join('\n');
@@ -129,7 +135,7 @@ export function buildEscPos(text: string): string {
     `${ESC}@`, // init
     `${ESC}a\x01`, // center
     // Buang byte kontrol agar catatan pengguna tidak bisa menyuntik perintah printer.
-    sanitizePrintText(text),
+    sanitizePrintText(text, 100000),
     '\n\n\n',
     `${GS}V\x42\x00`, // feed + partial cut
   ].join('');

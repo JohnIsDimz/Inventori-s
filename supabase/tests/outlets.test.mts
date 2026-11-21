@@ -283,7 +283,7 @@ check('dua cabang: daftar & stok disaring ke cabang aktif', () => {
   assert.equal(pusat.products[0].stock, 4);
 });
 
-check('baris lama tanpa cabang tetap tampil di cabang mana pun', () => {
+check('baris lama tanpa cabang hanya milik cabang pertama', () => {
   const sumber = {
     profile: { name: 'Warung', ownerName: '', code: 'W1', openTime: '07:00', closeTime: '21:00' },
     settings: { hideBalance: false, autoPrint: false, printerName: '', printerAddress: '', reminderTemplate: 'Halo', taxPercent: 0, lastBackupAt: null, notifEnabled: false, notifHour: 8 },
@@ -299,7 +299,8 @@ check('baris lama tanpa cabang tetap tampil di cabang mana pun', () => {
     outlets: [outlet({ id: 'out_a' }), outlet({ id: 'out_b', name: 'Dua', code: 'D2' })],
     activeOutletId: 'out_b',
   };
-  assert.equal(scopeData(sumber).transactions.length, 1, 'tidak ada data yang hilang');
+  assert.equal(scopeData(sumber).transactions.length, 0, 'tidak bocor ke cabang kedua');
+  assert.equal(scopeData({ ...sumber, activeOutletId: 'out_a' }).transactions.length, 1);
 });
 
 check('ringkasan per cabang: transaksi, omzet, kasbon berjalan', () => {
